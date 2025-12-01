@@ -60,27 +60,28 @@ Step 2: Agent Execution (Post-Deployment)
 📊 Security Analysis and Trade-Offs
 
 Benefits (Why this is effective)
-    Feature	            Evasion Technique
-    ADS Concealment	    The actual payload (the Realm stager string) is not in the filesystem where static or basic dynamic scanners look. It's hidden in the $DATA stream attached to a benign file.
-    LOLBAS Execution	Uses native Windows binaries (wscript.exe, powershell.exe, schtasks.exe) for execution, avoiding the need to drop suspicious custom executables.
-Dual Persistence	Schedule Tasks running as SYSTEM provide the highest level of stability and privilege, and the dual tasks with a 5-minute check ensure automatic self-healing if the agent is terminated.
-Stealthy Artifacts	Uses common Microsoft-like file locations (C:\ProgramData) and Microsoft-like task names (KernelConsolidator, ProcessMonitor), blending in with normal system operations.
-In-Memory Agent	The final Imix agent never touches the disk, making it far more difficult for Endpoint Detection and Response (EDR) systems to analyze or quarantine based on signatures.
+    Feature	                Evasion Technique
+    ADS Concealment	        The actual payload (the Realm stager string) is not in the filesystem where static or basic dynamic scanners look. It's hidden in the $DATA stream attached to a benign file.
+    LOLBAS Execution	    Uses native Windows binaries (wscript.exe, powershell.exe, schtasks.exe) for execution, avoiding the need to drop suspicious custom executables.
+    Dual Persistence	    Schedule Tasks running as SYSTEM provide the highest level of stability and privilege, and the dual tasks with a 5-minute check ensure automatic self-healing if the agent is terminated.
+    Stealthy Artifacts	    Uses common Microsoft-like file locations (C:\ProgramData) and Microsoft-like task names (KernelConsolidator, ProcessMonitor), blending in with normal system operations.
+    In-Memory Agent	        The final Imix agent never touches the disk, making it far more difficult for Endpoint Detection and Response (EDR) systems to analyze or quarantine based on signatures.
+
 Potential Shortcomings and Detection Vectors
-Shortcoming	Possible Detection Method
-PowerShell Command-Line Monitoring	Although the agent is in-memory, the initial wscript.exe that spawns powershell.exe with the full stager command is visible in process execution logs (e.g., Sysmon Event ID 1). EDRs that monitor command-line arguments can flag this.
-Scheduled Task Creation	Creation of new Scheduled Tasks (KernelConsolidator, ProcessMonitor) is a highly visible event in the Windows Event Log (Event ID 4698). EDR solutions often alert on tasks created by remote users, even if the task names are benign.
-Network Traffic	The initial attempt to download the second stage from the Realm C2 server (e.g., via HTTP/S) will be visible to network firewalls and proxy logs.
-ADS Scanning	Advanced forensic tools and specialized EDR features can specifically enumerate and scan Alternate Data Streams, though this is less common for routine monitoring.
-VBScript Execution	The periodic execution of wscript.exe <VBSCRIPT_PATH> will be a recurring process execution event every 5 minutes, which might flag as suspicious behavior by an ML-based detection system.
+Shortcoming	                            Possible Detection Method
+PowerShell Command-Line Monitoring	    Although the agent is in-memory, the initial wscript.exe that spawns powershell.exe with the full stager command is visible in process execution logs (e.g., Sysmon Event ID 1). EDRs that monitor command-line arguments can flag this.
+Scheduled Task Creation	                Creation of new Scheduled Tasks (KernelConsolidator, ProcessMonitor) is a highly visible event in the Windows Event Log (Event ID 4698). EDR solutions often alert on tasks created by remote users, even if the task names are benign.
+Network Traffic	                        The initial attempt to download the second stage from the Realm C2 server (e.g., via HTTP/S) will be visible to network firewalls and proxy logs.
+ADS Scanning	                        Advanced forensic tools and specialized EDR features can specifically enumerate and scan Alternate Data Streams, though this is less common for routine monitoring.
+VBScript Execution	                    The periodic execution of wscript.exe <VBSCRIPT_PATH> will be a recurring process execution event every 5 minutes, which might flag as suspicious behavior by an ML-based detection system.
 
 
 🛠️ Artifacts on Target Host
 
 The deployment creates the following artifacts on the target system (typically in C:\ProgramData\):
-Component	Path/Name	Purpose	Access Level
-Loader	C:\ProgramData\app_log_a.vbs	Reads ADS, launches powershell.exe.	SYSTEM/User
-ADS Host	C:\ProgramData\SystemCache.dat	Benign host file (0 bytes).	SYSTEM/User
-Payload	C:\ProgramData\SystemCache.dat:syc_core	Contains the Base64-encoded Imix stager.	SYSTEM/User
-Persistence 1	\Microsoft\Windows\Customer Experience Improvement Program\KernelConsolidator	Runs C:\ProgramData\app_log_a.vbs on User Logon.	SYSTEM
-Persistence 2	\Microsoft\Windows\SystemCheck\ProcessMonitor	Runs every 5 minutes to relaunch the agent if it dies.
+Component	    Path/Name	                                                                        Purpose	                                                    Access Level
+Loader	        C:\ProgramData\app_log_a.vbs	                                                    Reads ADS, launches powershell.exe.	                        SYSTEM/User
+ADS Host	    C:\ProgramData\SystemCache.dat	                                                    Benign host file (0 bytes).	                                SYSTEM/User
+Payload	        C:\ProgramData\SystemCache.dat:syc_core	                                            Contains the Base64-encoded Imix stager.	                SYSTEM/User
+Persistence 1	\Microsoft\Windows\Customer Experience Improvement Program\KernelConsolidator	    Runs C:\ProgramData\app_log_a.vbs on User Logon.	        SYSTEM
+Persistence 2	\Microsoft\Windows\SystemCheck\ProcessMonitor	                                    Runs every 5 minutes to relaunch the agent if it dies.      SYSTEM

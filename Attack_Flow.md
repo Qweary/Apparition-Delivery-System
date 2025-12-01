@@ -60,9 +60,9 @@ Step 2: Agent Execution (Post-Deployment)
 📊 Security Analysis and Trade-Offs
 
 Benefits (Why this is effective)
-Feature	Evasion Technique
-ADS Concealment	The actual payload (the Realm stager string) is not in the filesystem where static or basic dynamic scanners look. It's hidden in the $DATA stream attached to a benign file.
-LOLBAS Execution	Uses native Windows binaries (wscript.exe, powershell.exe, schtasks.exe) for execution, avoiding the need to drop suspicious custom executables.
+    Feature	            Evasion Technique
+    ADS Concealment	    The actual payload (the Realm stager string) is not in the filesystem where static or basic dynamic scanners look. It's hidden in the $DATA stream attached to a benign file.
+    LOLBAS Execution	Uses native Windows binaries (wscript.exe, powershell.exe, schtasks.exe) for execution, avoiding the need to drop suspicious custom executables.
 Dual Persistence	Schedule Tasks running as SYSTEM provide the highest level of stability and privilege, and the dual tasks with a 5-minute check ensure automatic self-healing if the agent is terminated.
 Stealthy Artifacts	Uses common Microsoft-like file locations (C:\ProgramData) and Microsoft-like task names (KernelConsolidator, ProcessMonitor), blending in with normal system operations.
 In-Memory Agent	The final Imix agent never touches the disk, making it far more difficult for Endpoint Detection and Response (EDR) systems to analyze or quarantine based on signatures.

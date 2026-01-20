@@ -1,47 +1,54 @@
-# ADS-Drop-System: Stealthy Multi-Stage Persistence Framework
+# NTFS ADS Execution Research Framework
 
-The **ADS-Drop-System** is a highly resilient post-exploitation framework designed for authorized penetration testing and red-team operations. It achieves extreme evasiveness and redundancy by leveraging native Windows features known as Living Off The Land Binaries and Scripts (LOLBAS) and Alternate Data Streams (ADS).
+## Purpose
+This tool demonstrates the intersection of NTFS Alternate Data Streams (ADS) 
+and Windows execution primitives for adversary emulation and detection research.
 
-This system is optimized for use with the **Realm C2** framework and its **Imix Agent**.
+**Primary Use Cases:**
+1. Red Team: CCDC-style persistence testing (authorized environments only)
+2. Blue Team: Understanding ADS detection gaps and telemetry
+3. Research: Novel NTFS hiding techniques and their forensic visibility
 
-## 🛡️ Key Features
+## Ethical Guidelines
+✅ Authorized penetration testing with explicit permission
+✅ CCDC competition (adversary emulation)
+✅ Security research and detection development
+❌ Unauthorized access to systems
+❌ Malicious use
 
-*   **ADS Payload Concealment:** The Realm Imix PowerShell stager is hidden within an **Alternate Data Stream (`:syc_core`)** attached to a benign host file (`C:\ProgramData\SystemCache.dat`), bypassing most static file scanners.
-*   **LOLBAS Execution Chain:** Uses a minimalistic VBScript loader (`app_log_a.vbs`) to read the hidden ADS content and launch it via an invisible `powershell.exe` process.
-*   **High-Privilege Dual Persistence:** Creates two separate, SYSTEM-level persistence mechanisms via Scheduled Tasks:
-    *   **Logon Trigger:** Runs on every user logon (`\Microsoft\Windows\Customer Experience Improvement Program\KernelConsolidator`).
-    *   **Resilience Trigger:** Runs every 5 minutes to check for and restart the Imix agent process (`\Microsoft\Windows\SystemCheck\ProcessMonitor`).
-*   **Administrative Deployment:** Includes the `Invoke-LateralDeploySyc` PowerShell function, which automates file staging, ADS creation, and Scheduled Task setup across multiple remote targets via `Invoke-Command` (Windows Remote Management).
+## Architecture
+```
+[Payload] → [Storage] → [Loader] → [Trigger]
+```
 
-## 💻 Usage & Deployment Flow
+**Storage Backends:**
+| Type           | Visibility | Stability        | Use Case                     |
+|----------------|------------|------------------|------------------------------|
+| Classic ADS    | Medium     | High             | Production red team          |
+| Volume Root    | Low        | High             | Enumeration evasion research |
+| NTFS Internal* | Very Low   | **Experimental** | Research only                |
 
-The deployment process is designed for an administrative user with remote execution privileges (e.g., via `WinRM`/`Invoke-Command`).
+*NTFS Internal streams (e.g., $LOGGED_UTILITY_STREAM) are **unstable** 
+and may cause filesystem corruption. Use only in disposable VMs.
 
-### Prerequisites
+## Detection & Defense
+This tool intentionally creates artifacts to help blue teams understand detection:
 
-1.  **Realm C2:** Obtain the final, Base64-encoded, full PowerShell Imix Stager command string from your Realm console.
-2.  **Privilege:** Ensure your current shell has Administrative privileges and connectivity to target hosts.
+**What Defender Will See:**
+- Scheduled task creation (Event ID 4698)
+- Wscript.exe spawning PowerShell (Sysmon Event ID 1)
+- ADS access (if stream hash monitoring enabled)
 
-### Step 1: Execute Deployment Script
-
-1.  Load the `Invoke-LateralDeploySyc` function.
-    ```powershell
-    . .\Invoke-LateralDeploySyc.ps1
-    ```
-2.  Run the function, passing the Base64-encoded Realm stager and the list of target hostnames.
-    ```powershell
-    # Example: Replace "YOUR_BASE64_STAGER" with the actual Imix Stager string
-    $Stager = "YOUR_BASE64_STAGER"
-    $Targets = @('TargetHostA', 'TargetHostB', '192.168.1.10')
-
-    Invoke-LateralDeploySyc -TargetHosts $Targets -RealmStager $Stager -Verbose
-    ```
-3.  The script remotely creates all necessary files, ADS content, and Scheduled Tasks on the target hosts.
-
-### Step 2: Initial Agent Launch
-
-Though the resilience task will eventually fire, the following command fires the agent immediately.
-
+**How to Detect:**
 ```powershell
-# Immediately run the VBScript on a target to launch the Imix agent
-Invoke-Command -ComputerName TargetHostA -ScriptBlock { wscript.exe //B "C:\ProgramData\app_log_a.vbs" }
+# Find all ADS in ProgramData
+Get-ChildItem C:\ProgramData -Recurse | Get-Item -Stream * | Where-Object Stream -ne ':$DATA'
+
+# Check for suspicious tasks
+Get-ScheduledTask | Where-Object {$_.TaskPath -like "*Windows*" -and $_.Author -eq ""}
+```
+
+## MITRE ATT&CK Mapping
+- T1564.004: Hide Artifacts - NTFS File Attributes
+- T1053.005: Scheduled Task/Job
+- T1059.001: PowerShell

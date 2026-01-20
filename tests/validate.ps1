@@ -25,14 +25,23 @@ $beaconPayload = @'
 
 function Start-BeaconListener {
     $port = if($BeaconTarget -match ':(\d+)') { $matches[1] } else { 8080 }
-    Start-Job -ScriptBlock {
+    $job = Start-Job -ScriptBlock {
         `$listener = [System.Net.HttpListener]::Create(); `$listener.Prefixes.Add("http://127.0.0.1:$using:port/")
         `$listener.Start(); "`n🌐 Listener :$using:port" | Out-File $using:beaconLog
         while(`$listener.IsListening) {
             `$ctx = `$listener.GetContext(); `$body = [System.IO.StreamReader]::new(`$ctx.Request.InputStream).ReadToEnd()
             "[$([DateTime]::Now)] Beacon hit: `$body" | Add-Content $using:beaconLog; `$ctx.Response.Close()
         }
-    } | Out-Null; Start-Sleep 1
+    }
+    # Wait for listener to be ready
+    Start-Sleep -Seconds 2
+    
+    # Verify listener is running
+    if((Get-Job $job.Id).State -ne 'Running') {
+        throw "Beacon listener failed to start"
+    }
+    
+    return $job
 }
 
 function Test-LocalDeployment {

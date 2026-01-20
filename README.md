@@ -1,8 +1,10 @@
-# NTFS ADS Execution Research Framework
+# Apparition Delivery System
+“Execution without presence.”
 
 ## Purpose
-This tool demonstrates the intersection of NTFS Alternate Data Streams (ADS) 
-and Windows execution primitives for adversary emulation and detection research.
+ADS (Apparition Delivery System) is a research framework for exploring stealthy 
+Windows execution techniques using filesystem artifacts that exist, execute, 
+and persist outside traditional visibility.
 
 **Primary Use Cases:**
 1. Red Team: CCDC-style persistence testing (authorized environments only)

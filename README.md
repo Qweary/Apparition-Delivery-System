@@ -31,8 +31,7 @@ and persist outside traditional visibility.
 | Volume Root    | Low        | High             | Enumeration evasion research |
 | NTFS Internal* | Very Low   | **Experimental** | Research only                |
 
-*NTFS Internal streams (e.g., $LOGGED_UTILITY_STREAM) are **unstable** 
-and may cause filesystem corruption. Use only in disposable VMs.
+# *NTFS Internal streams (e.g., $LOGGED_UTILITY_STREAM) are **unstable** and may cause filesystem corruption. Use only in disposable VMs.
 
 ## Detection & Defense
 This tool intentionally creates artifacts to help blue teams understand detection:

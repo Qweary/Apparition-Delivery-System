@@ -8,9 +8,15 @@ powershell
 # Task Creation
 schtasks /query /fo LIST | findstr /i "UX\|Maintenance\|UsbCeip"
 
-# ADS Discovery
-dir /r C:\ /s 2>nul | findstr ":syc_payload\|:Sys\|:Kernel"
-powershell "Get-ChildItem C:\ -Recurse -ErrorAction SilentlyContinue | ? PSIsContainer -eq $false | Get-Item -Stream * | ? Name -match 'syc|app_log'"
+# Focused ADS search
+dir /r C:\ProgramData /s 2>nul | findstr ":syc :Sys :Kernel :app_log"
+
+# PowerShell
+Get-ChildItem C:\ProgramData -Recurse -File -ErrorAction SilentlyContinue | 
+    Get-Item -Stream * | 
+    Where-Object { $_.Stream -notmatch '^:\$DATA$' -and $_.Stream -match '(syc|Sys|Kernel|app_log)' }
+
+Get-ChildItem C:\ -Recurse -ErrorAction SilentlyContinue | ? PSIsContainer -eq $false | Get-Item -Stream * | ? Name -match 'syc|app_log'
 
 # Process Chains
 Get-Process | ? {$_.ProcessName -match "script|powershell|wscript"} | select Name,Id,Parent

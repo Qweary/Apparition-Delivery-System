@@ -3,10 +3,10 @@
 ```markdown
 # CCDC Validation & Scoring
 
-## 🔍 Blue Team Detection (Your Score Triggers)
+## 🔍 Blue Team Detection
 
 ```powershell
-# 1. Task Creation (Primary score)
+# 1. Task Creatio
 schtasks /query /fo LIST | findstr /i "UX\|Maintenance\|UsbCeip"
 
 # 2. ADS Discovery

@@ -1,25 +1,25 @@
 
-## `docs/CCDC-TESTS.md`
-```markdown
-# CCDC Validation & Scoring
+### `docs/CCDC-TESTS.md`
 
 ## 🔍 Blue Team Detection
+```
+powershell
 
-```powershell
-# 1. Task Creatio
+# Task Creation
 schtasks /query /fo LIST | findstr /i "UX\|Maintenance\|UsbCeip"
 
-# 2. ADS Discovery
+# ADS Discovery
 dir /r C:\ /s 2>nul | findstr ":syc_payload\|:Sys\|:Kernel"
 powershell "Get-ChildItem C:\ -Recurse -ErrorAction SilentlyContinue | ? PSIsContainer -eq $false | Get-Item -Stream * | ? Name -match 'syc|app_log'"
 
-# 3. Process Chains
+# Process Chains
 Get-Process | ? {$_.ProcessName -match "script|powershell|wscript"} | select Name,Id,Parent
 
-# 4. WMI Events
+# WMI Events
 Get-WmiObject -Namespace root\subscription -Class __EventConsumer | select Query,CommandLineTemplate
-
-🧪 Red Team Validation
+```
+## 🧪 Red Team Validation
+```
 powershell
 
 # Test payload (infinite notepad beacon)
@@ -37,3 +37,4 @@ Get-Process notepad  # Beacon active
 schtasks /delete /f /tn "Microsoft\Windows\UX\*" 2>nul
 del /a C:\ProgramData\app_log*.vbs 2>nul
 powershell "Get-ChildItem C:\ -Stream * | ? Name -match 'syc' | Remove-Item"
+```

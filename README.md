@@ -19,6 +19,8 @@ If on linux, use the following to see some ASCII art:
 echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ... ..\033[34m .  . : .\n: .   .       .       \033[36m.        .        .        .\033[34m       .   . . :\n.       \033[36m_    ___   \033[96m___   _      ___    ___ _____  _    \033[36m___  _  _       \033[34m.\n       \033[36m/_\   | _ \| \033[97m_ \ /_\    | __ \ |_ _|_   _|| | \033[36m/ _ \| \| |\n      \033[36m/ _ \  |  _/| \033[97m _// _ \   | |/ /  | |  | |  | || \033[36m(_) | .\` |\n     \033[36m/_/ \_\ |_|  \033[97m|_/ /_/ \_\_|_|\_| |___| |_|  |_| \033[36m\___/|_|\_|\n\033[34m: .    . .   \033[36m. . ..  . .. . . .. . .. .. . .. ... . .. .\033[34m    . . :\n.   .  .     \033[36m. :     .    :  . : :   . : :    . :      .\033[34m    .   .\n   .   :      \033[36m'  \033[96mApparition Delivery System (ADS)\033[36m '      \033[34m:    .\n .  .  .   . . \033[36m' \033[96m\" Execution without presence \"\033[36m '\033[34m .    .   .  .\n    . .      . .. .. . ... .................. .. . .. .      . .\033[0m"
 ```
 
+## Note: this tool does not yet work, but I know the research behind it is sound. It is definitely a work in progress, and I welcome any fixes lol.
+
 ## Purpose
 ADS (Apparition Delivery System) is a research framework for exploring stealthy 
 Windows execution techniques using filesystem artifacts that exist, execute, 

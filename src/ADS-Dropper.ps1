@@ -147,7 +147,6 @@ if ($args -contains '-h' -or $args -contains '--help' -or $args -contains '-?' -
 }
 
 # Help display function
-Help display function
 function Show-Help { $helpText = @"
 ╔══════════════════════════════════════════════════════════════════════════╗ ║ ADS-Dropper v2.1 - Quick Reference ║ ╚══════════════════════════════════════════════════════════════════════════╝
 USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
@@ -187,7 +186,7 @@ Validation suite: .\tests\validate.ps1
 Manual verification: dir /r C:\ProgramData # Show ADS schtasks /query /fo LIST # Show tasks Get-Item C::ads_* 2>$null # Check volume root
 MORE INFO:
 Full help: Get-Help .\ADS-Dropper.ps1 -Full Examples: Get-Help .\ADS-Dropper.ps1 -Examples Parameters: Get-Help .\ADS-Dropper.ps1 -Parameter *
-GitHub: https://github.com/yourusername/ADS-Dropper Blog writeup: https://yourusername.github.io/blog/ads-dropper
+GitHub: https://github.com/qweary/apparition-delivery-system Blog writeup: https://qweary.github.io
 ETHICAL USE ONLY - AUTHORIZED TESTING WITH PERMISSION REQUIRED
 "@
 Write-Host $helpText -ForegroundColor Cyan

@@ -120,7 +120,7 @@ Detection:
 Cleanup:
 Run tests/cleanup.ps1 to remove all artifacts:
   .\tests\cleanup.ps1 -Targets @('localhost')
-.LINK GitHub: https://github.com/yourusername/ADS-Dropper Blog: https://yourusername.github.io/blog/ads-dropper
+.LINK GitHub: https://github.com/Qweary/Appartition-Delivery-System Blog: https://qweary.github.io
 Research Credits:
 - Oddvar Moe: https://oddvar.moe (ADS execution techniques)
 - Enigma0x3: https://enigma0x3.net (ADS persistence patterns)

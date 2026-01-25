@@ -140,14 +140,29 @@ Unauthorized use is illegal and unethical.
 .FUNCTIONALITY Persistence, Execution, Defense Evasion
 #>
 
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$false)][object]$Payload,
+    [string[]]$Targets = @('localhost'),
+    [string[]]$Persist = @('task'),
+    [switch]$Randomize,
+    [switch]$Encrypt,
+    [switch]$NoExec,
+    [PSCredential]$Credential,
+    [switch]$Help
+)
+
 # Help flag intercept
-if ($args -contains '-h' -or $args -contains '--help' -or $args -contains '-?' -or $args -contains '/?' -or $args -contains 'help') {
+if ($Help -or $args -contains '-h' -or $args -contains '--help' -or 
+    $args -contains '-?' -or $args -contains '/?' -or 
+    (!$PSBoundParameters.ContainsKey('Payload') -and $args.Count -eq 0)) {
     Show-Help
     exit 0
 }
 
 # Help display function
-function Show-Help { $helpText = @"
+function Show-Help {
+    $helpText = @"
 ╔══════════════════════════════════════════════════════════════════════════╗ ║ ADS-Dropper v2.1 - Quick Reference ║ ╚══════════════════════════════════════════════════════════════════════════╝
 USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
 REQUIRED: -Payload <string|array> Payload to deploy (command or @('file.ps1'))
@@ -193,14 +208,6 @@ Write-Host $helpText -ForegroundColor Cyan
 }
 
 # Main Code
-[CmdletBinding()] param(
-    [Parameter(Mandatory)][object]$Payload,
-    [string[]]$Targets = @('localhost'),
-    [string[]]$Persist = @('task'),
-    [switch]$Randomize, [switch]$Encrypt, [switch]$NoExec,
-    [PSCredential]$Credential
-)
-
 if ($Targets -notcontains 'localhost' -and -not $Credential) {
     throw "Remote targets require -Credential parameter"
 }

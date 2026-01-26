@@ -19,7 +19,25 @@ If on linux, use the following to see some ASCII art:
 echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ... ..\033[34m .  . : .\n: .   .       .       \033[36m.        .        .        .\033[34m       .   . . :\n.       \033[36m_    ___   \033[96m___   _      ___    ___ _____  _    \033[36m___  _  _       \033[34m.\n       \033[36m/_\   | _ \| \033[97m_ \ /_\    | __ \ |_ _|_   _|| | \033[36m/ _ \| \| |\n      \033[36m/ _ \  |  _/| \033[97m _// _ \   | |/ /  | |  | |  | || \033[36m(_) | .\` |\n     \033[36m/_/ \_\ |_|  \033[97m|_/ /_/ \_\_|_|\_| |___| |_|  |_| \033[36m\___/|_|\_|\n\033[34m: .    . .   \033[36m. . ..  . .. . . .. . .. .. . .. ... . .. .\033[34m    . . :\n.   .  .     \033[36m. :     .    :  . : :   . : :    . :      .\033[34m    .   .\n   .   :      \033[36m'  \033[96mApparition Delivery System (ADS)\033[36m '      \033[34m:    .\n .  .  .   . . \033[36m' \033[96m\" Execution without presence \"\033[36m '\033[34m .    .   .  .\n    . .      . .. .. . ... .................. .. . .. .      . .\033[0m"
 ```
 
-## Note: This tool just passed basic functionality checks, now doing systematic feature checks. I welcome fixes/improvements. Thank you for looking!
+## Note: This tool passed basic functionality checks, but failed several execution tests. I welcome fixes/improvements. Thank you for looking!
+
+### Unsuccessful Tests:
+Execution (yes, the highest priority)
+Decryption Proof (see above)
+Registry Persistence Proof
+Volume Root ADS Write
+Working Validation Script
+
+### Successful (it would appear) tests:
+Write to Stream
+Encryption
+Randomization of Names
+Registry Writes
+Scheduled Task Writes
+
+### Yet to Add:
+Use of notepad.exe
+Behavioral Obfuscation Techniques (e.g. timing, polishing of randomization)
 
 ## Purpose
 ADS (Apparition Delivery System) is a research framework for exploring stealthy 
@@ -50,7 +68,7 @@ and persist outside traditional visibility.
 | Volume Root    | Low        | High             | Enumeration evasion research |
 | NTFS Internal* | Very Low   | **Experimental** | Research only                |
 
-# *NTFS Internal streams (e.g., $LOGGED_UTILITY_STREAM) are **unstable** and may cause filesystem corruption. Use only in disposable VMs.
+### *NTFS Internal streams (e.g., $LOGGED_UTILITY_STREAM) are **unstable** and may cause filesystem corruption. Use only in disposable VMs.
 
 ## Detection & Defense
 This tool intentionally creates artifacts to help blue teams understand detection:

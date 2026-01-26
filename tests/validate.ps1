@@ -70,7 +70,7 @@ function Test-LocalDeployment {
     
     & "$scriptPath\src\ADS-Dropper.ps1" -Payload $beaconPayload -Persist $Persist -Encrypt:$Encrypt -Randomize -NoExec
     
-    $hostFiles = Get-ChildItem "C:\ProgramData" -Filter "*.dat", "*.log", "*.tmp" -ErrorAction SilentlyContinue
+    $hostFiles = Get-ChildItem "C:\ProgramData" -Include "*.dat", "*.log", "*.tmp", "*.chk", "*.idx" -Recurse -ErrorAction SilentlyContinue
     $adsFound = $false
     
     foreach($file in $hostFiles) {

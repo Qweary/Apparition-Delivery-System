@@ -24,15 +24,34 @@ $beaconPayload = @'
 '@
 
 function Start-BeaconListener {
-    $port = if($BeaconTarget -match ':(\d+)') { $matches[1] } else { 8080 }
+    param([string]$Port = "8080", [string]$LogPath = "$testDir\beacon.log")
+    
     $job = Start-Job -ScriptBlock {
-        `$listener = [System.Net.HttpListener]::Create(); `$listener.Prefixes.Add("http://127.0.0.1:$using:port/")
-        `$listener.Start(); "`nListener :$using:port" | Out-File $using:beaconLog
-        while(`$listener.IsListening) {
-            `$ctx = `$listener.GetContext(); `$body = [System.IO.StreamReader]::new(`$ctx.Request.InputStream).ReadToEnd()
-            "[$([DateTime]::Now)] Beacon hit: `$body" | Add-Content $using:beaconLog; `$ctx.Response.Close()
+        param($Port, $LogPath)
+        
+        $listener = [System.Net.HttpListener]::new()
+        $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+        $listener.Start()
+        
+        "Listener started on port $Port" | Out-File $LogPath
+        
+        while($listener.IsListening) {
+            try {
+                $ctx = $listener.GetContext()
+                $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream)
+                $body = $reader.ReadToEnd()
+                $reader.Close()
+                
+                "[$([DateTime]::Now)] Beacon: $body" | Add-Content $LogPath
+                
+                $ctx.Response.StatusCode = 200
+                $ctx.Response.Close()
+            } catch {
+                "Error: $_" | Add-Content $LogPath
+                break
+            }
         }
-    }
+    } -ArgumentList @($Port, $LogPath)
     
     # Wait for listener to be ready
     Start-Sleep -Seconds 2

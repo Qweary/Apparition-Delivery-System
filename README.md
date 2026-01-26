@@ -19,16 +19,17 @@ If on linux, use the following to see some ASCII art:
 echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ... ..\033[34m .  . : .\n: .   .       .       \033[36m.        .        .        .\033[34m       .   . . :\n.       \033[36m_    ___   \033[96m___   _      ___    ___ _____  _    \033[36m___  _  _       \033[34m.\n       \033[36m/_\   | _ \| \033[97m_ \ /_\    | __ \ |_ _|_   _|| | \033[36m/ _ \| \| |\n      \033[36m/ _ \  |  _/| \033[97m _// _ \   | |/ /  | |  | |  | || \033[36m(_) | .\` |\n     \033[36m/_/ \_\ |_|  \033[97m|_/ /_/ \_\_|_|\_| |___| |_|  |_| \033[36m\___/|_|\_|\n\033[34m: .    . .   \033[36m. . ..  . .. . . .. . .. .. . .. ... . .. .\033[34m    . . :\n.   .  .     \033[36m. :     .    :  . : :   . : :    . :      .\033[34m    .   .\n   .   :      \033[36m'  \033[96mApparition Delivery System (ADS)\033[36m '      \033[34m:    .\n .  .  .   . . \033[36m' \033[96m\" Execution without presence \"\033[36m '\033[34m .    .   .  .\n    . .      . .. .. . ... .................. .. . .. .      . .\033[0m"
 ```
 
-## Note: This tool passed basic functionality checks, but failed several execution tests. I welcome fixes/improvements. Thank you for looking!
+## Note: This tool passed some manual execution checks, but failed other tests and has not been tested for automation or long-term reliability. I welcome fixes/improvements. Thank you for looking!
 
 ### Unsuccessful Tests:
-- Execution (yes, the highest priority)
+- Automated Execution (not tested - just got execution PoC done)
 - Decryption Proof (see above)
 - Registry Persistence Proof
 - Volume Root ADS Write
 - Working Validation Script
 
 ### Successful (it would appear) tests:
+- Execution via manual wscript call
 - Write to Stream
 - Encryption
 - Randomization of Names

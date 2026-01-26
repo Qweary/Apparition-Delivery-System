@@ -22,22 +22,22 @@ echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ..
 ## Note: This tool passed basic functionality checks, but failed several execution tests. I welcome fixes/improvements. Thank you for looking!
 
 ### Unsuccessful Tests:
-Execution (yes, the highest priority)
-Decryption Proof (see above)
-Registry Persistence Proof
-Volume Root ADS Write
-Working Validation Script
+- Execution (yes, the highest priority)
+- Decryption Proof (see above)
+- Registry Persistence Proof
+- Volume Root ADS Write
+- Working Validation Script
 
 ### Successful (it would appear) tests:
-Write to Stream
-Encryption
-Randomization of Names
-Registry Writes
-Scheduled Task Writes
+- Write to Stream
+- Encryption
+- Randomization of Names
+- Registry Writes
+- Scheduled Task Writes
 
 ### Yet to Add:
-Use of notepad.exe
-Behavioral Obfuscation Techniques (e.g. timing, polishing of randomization)
+- Use of notepad.exe
+- Behavioral Obfuscation Techniques (e.g. timing, polishing of randomization)
 
 ## Purpose
 ADS (Apparition Delivery System) is a research framework for exploring stealthy 

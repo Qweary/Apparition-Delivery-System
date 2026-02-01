@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build-ADSOneLiner v2 - Simplified, minimal-footprint generator
+    ADS-OneLiner- Simplified, minimal-footprint generator
 
 .DESCRIPTION
     Pre-computes everything on Linux, sends minimal code to Windows.
@@ -93,8 +93,8 @@ $streamName = switch ($ZeroWidthMode) {
     }
 }
 
-# Get codepoints for manifest (ensure streamName is string)
-$streamChars = [char[]]$streamName  # Convert string to char array properly
+# Get codepoints for manifest
+$streamChars = [char[]]$streamName 
 $codepoints = ($streamChars | ForEach-Object { "U+{0:X4}" -f [int]$_ }) -join ' '
 
 # Convert stream name to Unicode escape sequence for embedding
@@ -238,7 +238,7 @@ $encoded = [Convert]::ToBase64String($bytes)
 # Build output file
 $output = @"
 ═══════════════════════════════════════════════════════════════
- ADS Deployment Payload (v2 - Optimized)
+ ADS Deployment Payload
  Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 ═══════════════════════════════════════════════════════════════
 
@@ -344,7 +344,7 @@ Write-Host "`n══════════════════════
 Write-Host " SUMMARY" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════════════════`n" -ForegroundColor Cyan
 
-Write-Host "✓ Minimal payload generated (no unnecessary functions)" -ForegroundColor Green
+Write-Host "✓ Minimal payload generated" -ForegroundColor Green
 Write-Host "✓ Stream name pre-computed on Linux" -ForegroundColor Green
 Write-Host "✓ Output saved to: $OutputFile" -ForegroundColor Green
 if (-not $PayloadAtDeployment) {

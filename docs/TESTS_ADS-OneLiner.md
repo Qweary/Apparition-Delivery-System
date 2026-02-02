@@ -6,15 +6,9 @@ Quick Testing Guide - ADS-OneLiner.ps1
 
 # Create test directory
 
-mkdir -p ads-test
+mkdir ads-test
 
 cd ads-test
-
-# Copy files
-
-cp ../ADS-Dropper.ps1 .
-
-cp ../ADS-OneLiner.ps1 .
 
 # Run simplest test
 

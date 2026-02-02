@@ -482,12 +482,20 @@ function Get-RandomADSConfig {
         [string]$ZwPrefix
     )
 
-    $hostPath = if ($Randomize) {
-        Join-Path $env:ProgramData (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
+   # Cross-platform path handling
+    # On Linux (config generation): use Windows default path
+    # On Windows (actual deployment): use actual %ProgramData%
+    $baseDir = if ($env:ProgramData) {
+        $env:ProgramData  # Windows
     } else {
-        Join-Path $env:ProgramData "SystemCache.dat"
+        'C:\ProgramData'  # Linux generating for Windows
     }
 
+    $hostPath = if ($Randomize) {
+        Join-Path $baseDir (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
+    } else {
+        Join-Path $baseDir "SystemCache.dat"
+    }
     $streamName = if ($UseZeroWidth) {
         Generate-ZeroWidthStream -Mode $ZwMode -Prefix $ZwPrefix
     } else {

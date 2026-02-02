@@ -482,20 +482,26 @@ function Get-RandomADSConfig {
         [string]$ZwPrefix
     )
 
-   # Cross-platform path handling
+    # Cross-platform path handling
     # On Linux (config generation): use Windows default path
     # On Windows (actual deployment): use actual %ProgramData%
-    $baseDir = if ($env:ProgramData) {
-        $env:ProgramData  # Windows
+    if ($env:ProgramData) {
+        # Running on Windows - use Join-Path normally
+        $hostPath = if ($Randomize) {
+            Join-Path $env:ProgramData (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
+        } else {
+            Join-Path $env:ProgramData "SystemCache.dat"
+        }
     } else {
-        'C:\ProgramData'  # Linux generating for Windows
+        # Running on Linux - manually construct Windows path (Join-Path won't work with C:\)
+        if ($Randomize) {
+            $randomName = -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+            $hostPath = "C:\ProgramData\$randomName"
+        } else {
+            $hostPath = "C:\ProgramData\SystemCache.dat"
+        }
     }
-
-    $hostPath = if ($Randomize) {
-        Join-Path $baseDir (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
-    } else {
-        Join-Path $baseDir "SystemCache.dat"
-    }
+   
     $streamName = if ($UseZeroWidth) {
         Generate-ZeroWidthStream -Mode $ZwMode -Prefix $ZwPrefix
     } else {
@@ -692,9 +698,9 @@ $taskName = if ($Randomize) {
 if ($GenerateOnly) {
     # Convert stream name to escaped format for command generation
     $streamChars = $config.StreamName.ToCharArray()
-    $streamNameEscaped = -join ($streamChars | ForEach-Object {
+    $streamNameEscaped = ($streamChars | ForEach-Object {
         "[char]0x{0:X4}" -f [int]$_
-    })
+    }) -join '+'
     
     # Return configuration object
     return [PSCustomObject]@{

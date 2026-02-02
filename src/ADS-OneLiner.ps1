@@ -91,9 +91,9 @@ if (-not $Payload -and -not $PayloadAtDeployment) {
 
 # Locate ADS-Dropper.ps1
 $possiblePaths = @(
-    Join-Path $PSScriptRoot 'ADS-Dropper.ps1',
-    Join-Path $PSScriptRoot 'src/ADS-Dropper.ps1',
-    './ADS-Dropper.ps1',
+    (Join-Path $PSScriptRoot 'ADS-Dropper.ps1')
+    (Join-Path $PSScriptRoot 'src/ADS-Dropper.ps1')
+    './ADS-Dropper.ps1'
     './src/ADS-Dropper.ps1'
 )
 

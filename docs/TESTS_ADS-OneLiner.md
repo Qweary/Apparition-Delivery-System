@@ -12,13 +12,11 @@ cd ads-test
 
 # Run simplest test
 
-pwsh ADS-OneLiner.ps1
+```
+pwsh ADS-OneLiner.ps1 -Payload "Write-Host 'Hello from ADS!' -ForegroundColor Green" -OutputFile test-basic.txt
+```
 
--Payload "Write-Host 'Hello from ADS!' -ForegroundColor Green"
-
-  -OutputFile test-basic.txt
-
-Expected Output:
+## Expected Output:
 
 ╔═══════════════════════════════════════════════════════════╗
 

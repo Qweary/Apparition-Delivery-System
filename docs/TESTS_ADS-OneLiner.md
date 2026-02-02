@@ -4,24 +4,6 @@ Quick Testing Guide - ADS-OneLiner.ps1
 ⚡ Immediate Testing Steps
 -------------------------
 
-### Step 1: Verify Files
-
-bash
-
-# Check you have both files
-
-ls -lh ADS-Dropper.ps1 ADS-OneLiner.ps1
-
-# ADS-Dropper.ps1 should be ~28-30KB
-
-# ADS-OneLiner.ps1 should be ~12-15KB
-
-* * * * *
-
-### Step 2: Quick Sanity Test (Linux)
-
-bash
-
 # Create test directory
 
 mkdir -p ads-test

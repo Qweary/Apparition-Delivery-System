@@ -12,8 +12,10 @@ cd ads-test
 
 # Run simplest test
 
+either cd to the directory with ADS-Dropper.ps1 and ADS-OneLiner.ps1 (../src), or copy said two files into working directory
+
 ```
-pwsh ../ADS-OneLiner.ps1 -Payload "Write-Host 'Hello from ADS!' -ForegroundColor Green" -OutputFile test-basic.txt
+pwsh ./ADS-OneLiner.ps1 -Payload "Write-Host 'Hello from ADS!' -ForegroundColor Green" -OutputFile ../ads-test/test-basic.txt
 ```
 
 ## Expected Output:

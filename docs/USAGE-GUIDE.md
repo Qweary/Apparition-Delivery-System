@@ -1,4 +1,4 @@
-# ADS Deployment Usage Guide (Consider either combining with other help file, or naming each file clearly for scope)
+# ADS Deployment Usage Guide
 
 **Version:** 2.0.0 (Consolidated)  
 **Workflow:** Linux Generator → Windows Target  

@@ -1,4 +1,4 @@
-#### README.md (possibly need to add usage of ADS-OneLiner (especially if thats the primary way I will be using it)
+#### README.md
 # Apparition Delivery System
 ```
 . : .  .  .. ... ...... ..................... ...... ... .. .  . : .

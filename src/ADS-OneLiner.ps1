@@ -236,7 +236,8 @@ if ($CreateDecoys -gt 0) {
     
     for ($i = 0; $i -lt [Math]::Min($CreateDecoys, $decoyNames.Count); $i++) {
         $decoyContent = $decoyContents[$i]
-        $minimalScript += "'$decoyContent'|sc `"`$`$hp`:$($decoyNames[$i])`" -Force`n"
+        $decoyName = $decoyNames[$i]
+        $minimalScript += "'$decoyContent'|sc `"`$hp:$decoyName`" -Force`n"
     }
     $minimalScript += "`n"
 }

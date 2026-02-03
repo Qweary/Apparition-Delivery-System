@@ -152,6 +152,44 @@ function Test-Remote {
     }
 }
 
+function Test-OneLinerGeneration {
+    Write-Host "`n[6/6] ADS-OneLiner Generation" -ForegroundColor Yellow
+    
+    # Test payload generation on Linux-like environment
+    if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+        $testPayload = "Write-Host 'Test'"
+        $outputFile = "$testDir\oneliner-test.txt"
+        
+        & "$scriptPath\src\ADS-OneLiner.ps1" `
+            -Payload $testPayload `
+            -OutputFile $outputFile `
+            -Encrypt `
+            -ZeroWidthStreams
+        
+        if (!(Test-Path $outputFile)) {
+            throw "OneLiner generation failed - no output file"
+        }
+        
+        $content = Get-Content $outputFile -Raw
+        if (!($content -match "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand")) {
+            throw "OneLiner generation failed - invalid format"
+        }
+        
+        # Check manifest was created
+        $latestManifest = Get-ChildItem "$scriptPath\manifests" -Filter "manifest-*.json" | 
+                          Sort-Object LastWriteTime -Descending | 
+                          Select-Object -First 1
+        
+        if (!$latestManifest) {
+            throw "Manifest not created"
+        }
+        
+        Write-Host "PASS" -ForegroundColor Green
+    } else {
+        Write-Warning "pwsh not found - skipping OneLiner test"
+    }
+}
+
 function Test-Cleanup {
     if($Cleanup -or $PSBoundParameters.ContainsKey('Cleanup')) {
         schtasks /delete /f /tn "*UX*" 2>$null | Out-Null
@@ -173,6 +211,7 @@ try {
     Test-Beaconing
     Test-Encryption
     Test-Execution
+    Test-OneLinerGeneration
     
     if($RemoteTest) { Test-Remote }
     

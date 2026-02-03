@@ -343,6 +343,22 @@ Write-Host "[+] Cleanup complete" -ForegroundColor Green
 3. **Hybrid mode for legitimacy** - `Zone.Identifier` prefix looks normal
 4. **Document deployments** - Track which manifest goes to which target
 
+### LLM-Powered Generation
+
+1. **Use Claude/ChatGPT for payload generation** - Ask AI to run ADS-OneLiner.ps1
+2. **Iterate quickly** - Regenerate with different parameters in seconds
+3. **Per-target customization** - Unique payloads for each target automatically
+4. **Keep conversation context** - AI can reference previous manifests
+
+**Example prompt:**
+```
+Generate an ADS payload with:
+- C2 beacon to 10.0.0.50 every 60 seconds
+- Full encryption and randomization
+- 3 decoy streams
+- Hybrid zero-width mode with Zone.Identifier prefix
+```
+
 ---
 
 ## 🐛 Troubleshooting

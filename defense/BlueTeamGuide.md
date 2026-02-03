@@ -7,6 +7,12 @@ Tools Required: PowerShell, Sysmon, SIEM (Splunk/Sentinel/ELK)
 
 * * * * *
 
+Disclaimer
+----------
+
+These are suggestions aided by Claude (I am not a blue teamer, so input and assitance in improvement is welcome)
+
+
 Executive Summary
 -----------------
 

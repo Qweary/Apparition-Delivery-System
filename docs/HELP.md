@@ -1,4 +1,4 @@
-# ADS-Dropper Help System (need to add zero-width and use of ADS-OneLiner.ps1)
+# ADS-Dropper Help System (need to add zero-width and use of ADS-OneLiner.ps1 (or denote filenames for scope))
 
 ## ADS-Dropper v2.1 – C2-Agnostic NTFS Persistence Framework
 

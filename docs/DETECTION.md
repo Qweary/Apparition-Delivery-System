@@ -1,6 +1,8 @@
 #### /docs/DETECTION.md
 # Detection Research Findings
 
+These are suggestions aided by Claude (I am not a blue teamer, so input and assitance in improvement is welcome)
+
 ## Test Environment
 - Windows 11 22H2
 - Defender Real-Time Protection: Enabled

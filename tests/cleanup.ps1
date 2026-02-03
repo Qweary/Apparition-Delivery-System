@@ -17,5 +17,21 @@
            
            # Remove loaders
            Remove-Item C:\ProgramData\app_log*.vbs, C:\ProgramData\app_log*.ps1 -Force -ErrorAction SilentlyContinue
+           
+           # Remove randomized host files
+           Get-ChildItem C:\ProgramData -Filter "????????" -File | 
+               Where-Object { $_.Name -match '^[A-Za-z]{8}$' } | 
+               ForEach-Object {
+                   $streams = Get-Item $_.FullName -Stream * -ErrorAction SilentlyContinue
+                   if ($streams | Where-Object { $_.Stream -ne ':$DATA' }) {
+                       Remove-Item $_.FullName -Force
+                   }
+               }
+           
+           # Remove randomized tasks
+           Get-ScheduledTask | 
+               Where-Object { $_.TaskName -match '^WinSAT_[A-Z]{6}$' } | 
+               Unregister-ScheduledTask -Confirm:$false
+           
        }
    }

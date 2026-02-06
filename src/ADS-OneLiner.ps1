@@ -202,8 +202,24 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
 
 "@
 } else {
+    # Determine if payload is file path or direct content
+    $actualPayload = $Payload
+    
+    # Check if payload looks like a file path (doesn't contain newlines and is a valid path)
+    if (($Payload -notmatch "`n") -and (Test-Path $Payload -ErrorAction SilentlyContinue)) {
+        Write-Host "[*] File detected: $Payload" -ForegroundColor Yellow
+        Write-Host "[*] Reading file contents..." -ForegroundColor Yellow
+        try {
+            $actualPayload = Get-Content $Payload -Raw -ErrorAction Stop
+            Write-Host "[+] Successfully read $($actualPayload.Length) characters" -ForegroundColor Green
+        } catch {
+            Write-Error "Failed to read file: $_"
+            exit 1
+        }
+    }
+    
     # Escape the payload for embedding
-    $escapedPayload = $Payload -replace "'","''" -replace '`','``'
+    $escapedPayload = $actualPayload -replace "'","''" -replace '`','``'
     $minimalScript += @"
 # Payload
 `$pl='$escapedPayload'

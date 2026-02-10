@@ -416,7 +416,7 @@ $Payloads = [ordered]@{
 
     'FUN-003' = @{
         Desc  = 'Notepad popup with message'
-        Cmd   = '''Red Team Was Here - CCDC 2026 <3'' | Out-File "$env:TEMP\rt.txt" -Force; Start-Process notepad "$env:TEMP\rt.txt"'
+        Cmd   = '"''Red Team Was Here - CCDC 2026 <3''" | Out-File "$env:TEMP\rt.txt" -Force; Start-Process notepad "$env:TEMP\rt.txt"'
         Notes = 'Simple visible indicator — opens notepad with a message. Good for proving access.'
     }
 

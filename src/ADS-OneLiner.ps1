@@ -54,6 +54,10 @@
 .PARAMETER NoAmsi
     Opt out of AMSI bypass (bypass is ON by default)
 
+.PARAMETER UseDeepPlacement
+
+.PARAMETER AttachToExisting
+
 .EXAMPLE
     # Simple payload (no $ variables):
     pwsh ADS-OneLiner.ps1 -Payload "Write-Host 'Test'" -Persist task

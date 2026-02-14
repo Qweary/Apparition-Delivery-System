@@ -21,7 +21,7 @@ echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ..
 
 ---
 
-## Note: This tool passed some manual execution checks in controlled VMs; it has not been tested for automation, in the wild, or for long-term reliability. I welcome fixes/improvements. Thank you for looking!
+## Note: This tool passed some manual execution checks in controlled VMs; it has not been tested for automation, in the wild, or for long-term reliability. Task persistence works for more complex payloads. Encrypt didn't work last check. Need better scheduled task names and option for manual set for the task name. Registry persistence was having issues last tested. I welcome fixes/improvements. Thank you for looking!
 
 ---
 
@@ -63,7 +63,7 @@ Windows execution techniques that exist, execute, and persist outside traditiona
 
 ## 🚀 Quickstart
 
-### **v2.0 Workflow: Generate on Linux, Deploy on Windows**
+### **v2.2.4 Workflow: Generate on Linux, Deploy on Windows**
 
 The recommended workflow uses **ADS-OneLiner.ps1** to generate minimal payloads on your attacker machine:
 

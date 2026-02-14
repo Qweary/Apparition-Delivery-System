@@ -17,6 +17,21 @@
            
            # Remove loaders
            Remove-Item C:\ProgramData\app_log*.vbs, C:\ProgramData\app_log*.ps1 -Force -ErrorAction SilentlyContinue
+
+           # Remove Wscript and Jscript stuff
+           Get-ScheduledTask | Where-Object { $_.Actions.Execute -eq 'wscript.exe' -and $_.Actions.Arguments -match '\.js' } | ForEach-Object {
+               # Extract JScript path from Arguments
+               if ($_.Actions.Arguments -match '"([^"]+\.js)"') {
+                   $jsPath = $Matches[1]
+                   if (Test-Path $jsPath) {
+                       Remove-Item $jsPath -Force
+                       Write-Host "Removed JScript: $jsPath" -ForegroundColor Yellow
+                   }
+               }
+               # Remove task
+               Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false
+               Write-Host "Removed task: $($_.TaskName)" -ForegroundColor Green
+           }
            
            # Remove randomized host files
            Get-ChildItem C:\ProgramData -Filter "????????" -File | 

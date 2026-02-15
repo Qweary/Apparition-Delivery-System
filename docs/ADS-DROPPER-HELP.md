@@ -12,7 +12,7 @@ ADS-Dropper v2.1 - C2-Agnostic NTFS Persistence Framework
 
 ## DESCRIPTION
 
-ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes them via native Windows binaries (VBScript/PowerShell), and persists through multiple methods (Scheduled Tasks, Registry, WMI, Volume Root ADS).
+ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes them via native Windows binaries (VBScript/PowerShell), and persists through multiple methods (Scheduled Tasks, Registry).
 
 Supports any C2 framework (Realm Imix, Metasploit, Sliver) or custom commands.
 

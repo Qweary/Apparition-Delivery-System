@@ -230,7 +230,7 @@ payload             204      # <- Real payload (if not zero-width)
 ### `-Persist`
 
 Persistence method to configure in generated commands.  
-Options: `task`, `registry`, `wmi`, `none`  
+Options: `task`, `registry`, `none`  
 Default: `task`
 
 #### **task** (Default)
@@ -262,16 +262,6 @@ Creates a registry Run key that executes at user logon.
 **Requirements:** None (works as regular user)
 
 ---
-
-#### **wmi**
-Creates a WMI event subscription for persistence.
-```bash
--Persist wmi
-```
-
-**Requirements:** Admin privileges
-
-**Note:** More complex, harder to detect, experimental support
 
 ---
 

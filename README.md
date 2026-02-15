@@ -21,7 +21,7 @@ echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ..
 
 ---
 
-## Note: This tool passed some manual execution checks in controlled VMs; it has not been tested for automation, in the wild, or for long-term reliability. Task persistence works for more complex payloads. Registry persistence has issues on triggers. WMI persistence does not work. Encrypt didn't work last check.  Need better scheduled task names and option to manually set the scheduled task name.  I welcome fixes/improvements. Thank you for looking!
+## Note: This tool passed some manual execution checks in controlled VMs; it has not been tested for automation, in the wild, or for long-term reliability. Task persistence works for more complex payloads. Registry persistence has issues on triggers. Encrypt didn't work last check.  Need better scheduled task names and option to manually set the scheduled task name.  I welcome fixes/improvements. Thank you for looking!
 
 ---
 
@@ -216,7 +216,7 @@ Example:
 .\src\ADS-Dropper.ps1 `
     -Payload <string|scriptblock|filepath> `
     [-Targets <string[]>] `
-    [-Persist <task|registry|wmi>] `
+    [-Persist <task|registry>] `
     [-Randomize] `
     [-Encrypt] `
     [-ZeroWidthStreams] `

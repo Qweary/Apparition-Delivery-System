@@ -204,7 +204,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ...
 | `-PayloadAtDeployment` | switch | false | Prompt for payload at Windows deployment time |
 | `-ZeroWidthMode` | string | `single` | `single`, `multi`, or `hybrid` |
 | `-HybridPrefix` | string | auto | Prefix for hybrid mode (e.g., `Zone.Identifier`) |
-| `-Persist` | string | `task` | `task`, `registry`, `wmi`, or `none` |
+| `-Persist` | string | `task` | `task`, `registry`, or `none` |
 | `-CreateDecoys` | int | 0 | Number of decoy streams (0-10) |
 | `-Encrypt` | switch | false | Enable AES-256 encryption |
 | `-Randomize` | switch | false | Randomize host file name |

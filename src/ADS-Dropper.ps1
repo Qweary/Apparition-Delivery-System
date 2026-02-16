@@ -1356,7 +1356,7 @@ $decFuncName = Get-ObfuscatedName -Type FunctionDec -Level $Obfuscate
 # If GenerateOnly mode, return configuration and exit
 if ($GenerateOnly) {
     # Convert stream name to escaped format for command generation
-    $streamChars = $config.StreamName.ToCharArray()
+    $streamChars = ([string]$config.StreamName).ToCharArray()
     $streamNameEscaped = ($streamChars | ForEach-Object {
         "[char]0x{0:X4}" -f [int]$_
     }) -join '+'

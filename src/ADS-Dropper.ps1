@@ -143,7 +143,7 @@ param(
     [ValidateSet('task', 'registry', 'none')]
     [string]$Persist = 'task',
 
-    [switch]$Randomize,
+    [bool]$Randomize = $false,
     [switch]$Encrypt,
 
     # Unified obfuscation level — controls naming, placement, and ZW injection
@@ -166,9 +166,9 @@ param(
     [switch]$Help,
     
     # Deep placement - bury ADS in legitimate Windows subdirectories
-    [switch]$UseDeepPlacement,
+    [bool]$UseDeepPlacement = $false,
     # Attach to existing file instead of creating a new host file
-    [switch]$AttachToExisting,
+    [bool]$AttachToExisting = $false,
     
     [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
     [string[]]$Trigger = @('AtLogOn', 'AtStartup'),
@@ -298,7 +298,7 @@ if ($Help -or $args -contains '-h' -or $args -contains '--help' -or
 if ($Obfuscate -in @('Advanced', 'Paranoid')) {
     if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = $true }
     if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = $true }
-    if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = [switch]::new($true) }
+    if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = $true }
 }
 if ($Obfuscate -eq 'Paranoid') {
     if (-not $PSBoundParameters.ContainsKey('ZeroWidthStreams')) { $ZeroWidthStreams = [switch]::new($true) }
@@ -591,6 +591,13 @@ function Save-ManifestToLinux {
 #endregion
 
 #region Payload Encryption
+# TODO: The -Encrypt feature currently triggers Windows Defender Trojan detection.
+# Standard .NET crypto API patterns (AES, SHA256, key derivation) match known malware
+# signatures. Before this is production-ready, needs AV evasion research:
+#   - Multi-layer obfuscation (XOR pre-encryption, custom cipher, payload fragmentation)
+#   - Avoid direct .NET Cryptography namespace calls (use reflection or manual implementation)
+#   - Test iteratively against Defender on clean VMs
+# DO NOT modify encryption code until evasion strategy is researched and validated.
 
 function Get-HostDerivedKey {
     <#
@@ -1377,9 +1384,9 @@ if ($GenerateOnly) {
         DecoysCount = $CreateDecoys
         ZeroWidthMode = $ZeroWidthMode
         HybridPrefix = $HybridPrefix
-        Randomized = $Randomize.IsPresent
-        DeepPlacement = $UseDeepPlacement.IsPresent
-        AttachToExisting = $AttachToExisting.IsPresent
+        Randomized = [bool]$Randomize
+        DeepPlacement = [bool]$UseDeepPlacement
+        AttachToExisting = [bool]$AttachToExisting
         Trigger = $Trigger
         PeriodicMinutes = $PeriodicMinutes
         JitterPercent = $JitterPercent

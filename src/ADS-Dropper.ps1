@@ -97,7 +97,7 @@ Deploys Sliver beacon from file with registry Run key persistence.
 Description:
 Simple persistent beacon (writes to log every 5 minutes).
 No C2 connection, useful for testing persistence without network traffic.
-.NOTES File Name : ADS-Dropper.ps1 Author : Qweary (https://github.com/Qweary) Prerequisite : PowerShell 5.1+, NTFS filesystem, Windows 10+ Version : 2.3
+.NOTES File Name : ADS-Dropper.ps1 Author : Qweary (https://github.com/Qweary) Prerequisite : PowerShell 5.1+, NTFS filesystem, Windows 10+ Version : 2.4
 MITRE ATT&CK Mapping:
 - T1564.004: Hide Artifacts - NTFS File Attributes
 - T1053.005: Scheduled Task/Job
@@ -188,7 +188,7 @@ param(
 function Show-Help {
     $helpText = @"
 ===============================================================================
-  ADS-Dropper v2.3 - Quick Reference
+  ADS-Dropper v2.4 - Quick Reference
 ===============================================================================
 USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
 

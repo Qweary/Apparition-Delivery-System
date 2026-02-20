@@ -63,7 +63,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.3 (Trigger + Registry Persistence + Jitter)
+    Version: 2.4 (DeflateStream Evasion + Deep Placement Hardening)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
 #>
 
@@ -139,7 +139,7 @@ if ($ZeroWidthStreams -and -not $PSBoundParameters.ContainsKey('Obfuscate')) {
 }
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║ ADS Minimal Command Generator v2.3                  ║" -ForegroundColor Cyan
+Write-Host "║ ADS Minimal Command Generator v2.4                  ║" -ForegroundColor Cyan
 Write-Host "╚═══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 
 # ============================================================

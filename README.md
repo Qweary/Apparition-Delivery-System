@@ -14,7 +14,7 @@
     . .      . .. .. . ... .................. .. . .. .      . .
 ```
 
-**ADS hides, persists, and executes arbitrary PowerShell payloads inside NTFS Alternate Data Streams — invisible to `dir`, immune to `Get-ChildItem`, and clean against Windows Defender.**
+**ADS hides, persists, and executes arbitrary PowerShell payloads inside NTFS Alternate Data Streams. The aim was to provide PoC for research into novel red team ideas on Windows, and it turned into a bit more than that.**
 
 Current version: **v2.4** | [Quick-Start Guide](QUICK-START.md) | [Red Team Showcase](tests/RED-TEAM-SHOWCASE.md)
 

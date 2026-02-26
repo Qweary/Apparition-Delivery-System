@@ -129,14 +129,73 @@ pwsh -NoProfile -Command "
 
 ---
 
-## Known Limitations (v2.4)
+## Payload Library
+
+The `ops/payloads/ccdc-library.ps1` file contains 89 curated, pre-obfuscated payloads in 14 categories. Each is designed to pass directly to `-Payload`.
+
+```bash
+# Use a library payload by ID:
+pwsh src/ADS-OneLiner.ps1 \
+  -PayloadFile ops/payloads/ccdc-library.ps1 \
+  -Payload 'FW-002' \
+  -Obfuscate Advanced \
+  -OutputFile /tmp/fw-off.txt
+```
+
+| Category | IDs | What it does |
+|----------|-----|-------------|
+| `FW-*` | FW-001–008 | Disable firewall, open ports, nuclear silent kill |
+| `RDP-*` | RDP-001–004 | Enable RDP, disable NLA, change port |
+| `USR-*` | USR-001–006 | Local admin, hidden admin, password never expires |
+| `SVC-*` | SVC-001–006 | Disable Defender, Sysmon, Event Log, EDR shotgun |
+| `C2-*` | C2-001–007 | Download cradles, reverse shell, BITSAdmin, DNS beacon |
+| `CRED-*` | CRED-001–008 | SAM/SYSTEM dump, Credential Manager, cred file hunt |
+| `DEF-*` | DEF-001–009 | Clear logs, disable PS logging, wipe Defender history |
+| `RECON-*` | RECON-001–006 | System enum, domain enum, privesc surface |
+| `LAT-*` | LAT-001–005 | WinRM, PSRemoting, WMI, SMB shares, relay prep |
+| `EXFIL-*` | EXFIL-001–003 | Stage files, HTTP exfil, ICMP beacon |
+| `FUN-*` | FUN-001–008 | Desktop effects — **interactive session required** |
+| `MEME-*` | MEME-001–009 | Fake BSOD, clipboard hijack, LED disco, Matrix rain, OIIA |
+| `COMBO-*` | COMBO-001–003 | Multi-action packages (FW+RDP+admin+logging) |
+
+See `tests/RED-TEAM-SHOWCASE.md` for curated scenarios.
+
+---
+
+## Session Isolation: SYSTEM vs. Interactive Payloads
+
+Scheduled tasks run as `NT AUTHORITY\SYSTEM` in **Session 0** — a non-interactive session with no desktop, no audio, no clipboard access visible to the user.
+
+**SYSTEM-safe (work from any context):**
+- Firewall manipulation, registry edits, file writes, service control, credential dumps
+
+**Interactive-only (require user session — must see desktop):**
+- Memes with visible windows (notepads, ASCII art, screen effects)
+- Audio (text-to-speech, music)
+- Mouse/keyboard manipulation
+
+**Rule:** For anything a human needs to see or hear, use `-Persist registry`.
+Registry Run keys fire in the user's logon session.
+
+```bash
+# Meme payload — registry persist fires in user session
+pwsh src/ADS-OneLiner.ps1 \
+  -Payload 'while($true){Set-Clipboard "Red Team Was Here";Start-Sleep 30}' \
+  -Persist registry \
+  -Obfuscate Basic \
+  -OutputFile /tmp/meme.txt
+```
+
+---
+
+## Known Issues (v2.4)
 
 | Issue | Status | Workaround |
 |-------|--------|-----------|
-| **BUG-011:** `-Encrypt` may trigger Defender (Trojan detection) | Open — testing in progress | Omit `-Encrypt` for now; test with T3 in FIELD-TESTS.md |
-| **BUG-015:** DeflateStream evasion (compression) — VM test pending | Fixed in code, not yet VM-validated | T2 in FIELD-TESTS.md validates this |
-| **BUG-018:** ZeroWidth + `registry` persist may fail silently | Open | Use `-Persist task` with `-Obfuscate Paranoid` instead |
-| **BUG-014:** `git push origin test` rejected | Open | Queue to run `git pull --rebase origin test` |
+| **BUG-011:** `-Encrypt` triggering Defender (ClickFix.TFC) | **FIXED** — Sessions 12-16. T3-v2, T11-v2 confirmed PASS. T-REG-ENC pending re-validation. | None needed for task persist. Registry persist: run T-REG-ENC validation first. |
+| **BUG-015:** DeflateStream evasion | **FIXED** — T2 validated PASS 2026-02-19. Defender CLEAN. | — |
+| **BUG-018:** ZeroWidth + `registry` persist parser error | **FIXED** — Session 11. Validated PASS (RT1). | — |
+| **BUG-014:** `git push origin test` rejected | Open | `git pull --rebase origin test && git push` |
 
 ---
 

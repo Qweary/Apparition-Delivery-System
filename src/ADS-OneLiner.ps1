@@ -112,6 +112,10 @@
 .PARAMETER NoAmsi
     Opt out of AMSI bypass injection. Bypass is ON by default. Almost never use this.
 
+.PARAMETER UseDeepPlacement
+
+.PARAMETER AttachToExisting
+
 .EXAMPLE
     # Fastest possible — simple payload, Advanced stealth, task persistence:
     pwsh src/ADS-OneLiner.ps1 -Payload 'cmd /c netsh advfirewall set allprofiles state off'

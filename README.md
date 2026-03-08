@@ -141,14 +141,14 @@ pwsh src/ADS-OneLiner.ps1 -Payload 'cmd' -TaskName 'WinDefSvc' -FileName 'AppDat
           |
           | paste on Windows
           v
-[Target] ADS-Dropper.ps1  →  [ADS payload]  ←  NTFS stream (invisible to dir/ls)
-                          →  [JScript wrapper]  (wscript.exe → no PS window)
-                          →  [Task Scheduler] or [Registry Run key]
+[Target] powershell instance  →  [ADS payload]  ←  NTFS stream (invisible to dir/ls)
+                              →  [JScript wrapper]  (wscript.exe → no PS window)
+                              →  [Task Scheduler] or [Registry Run key]
 ```
 
 **Two-script architecture:**
 - `src/ADS-OneLiner.ps1` — Runs on Linux/Kali. Generates minimal deployment commands. No file uploads needed.
-- `src/ADS-Dropper.ps1` — Runs on Windows. All business logic: ADS creation, encryption, persistence, cleanup.
+- `src/ADS-Dropper.ps1` — Primary engine of the system (it might be able to run as a stand-alone if it were to be dropped on Windows). All business logic: ADS creation, encryption, persistence, cleanup.
 
 ---
 
@@ -170,7 +170,7 @@ pwsh src/ADS-OneLiner.ps1 -Payload 'cmd' -TaskName 'WinDefSvc' -FileName 'AppDat
 
 ## Payload Library
 
-The payload library (`ops/payloads/ccdc-library.ps1`) contains 89 curated payloads across 14 categories:
+The payload library (will be release after competitions) contains 89 curated payloads across 14 categories:
 
 | Category | IDs | Description |
 |----------|-----|-------------|
@@ -196,8 +196,6 @@ pwsh src/ADS-OneLiner.ps1 \
   -Payload 'FW-002' \
   -OutputFile /tmp/fw.txt
 ```
-
-See [RED-TEAM-SHOWCASE.md](tests/RED-TEAM-SHOWCASE.md) for curated scenarios with copy-paste commands.
 
 ---
 
@@ -243,9 +241,7 @@ Tasks run as `NT AUTHORITY\SYSTEM` (Session 0). Payloads that open windows, play
 ## See Also
 
 - [QUICK-START.md](QUICK-START.md) — Full parameter reference, scenario cookbook, bash escaping guide
-- [tests/RED-TEAM-SHOWCASE.md](tests/RED-TEAM-SHOWCASE.md) — Curated red team scenarios with copy-paste commands
 - [tests/COMPREHENSIVE-TEST-SUITE.md](tests/COMPREHENSIVE-TEST-SUITE.md) — Full VM validation test suite
-- [docs/PROJECT-AUTHORIZATION.md](docs/PROJECT-AUTHORIZATION.md) — Authorization and ethical framework
 - [defense/](defense/) — Blue team detection scripts
 
 ---

